@@ -8,7 +8,9 @@ a typed ``AnalysisResult`` dataclass.
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 import subprocess
 import tempfile
 import time
@@ -165,7 +167,7 @@ class Analyzer:
     def analyze_cortex(
         self,
         atlas: str,
-        region: str,
+        region: str | list[str],
         visualize: bool = False,
     ) -> AnalysisResult:
         """Analyze a cortical atlas region.
@@ -306,7 +308,7 @@ class Analyzer:
     def _cortex_voxel(
         self,
         atlas: str,
-        region: str,
+        region: str | list[str],
         visualize: bool,
     ) -> AnalysisResult:
         import nibabel as nib
@@ -328,8 +330,14 @@ class Analyzer:
             atlas_path,
         )
 
-        region_id = self._find_voxel_region_id(atlas_arr, atlas_path, region)
-        region_mask_raw = atlas_arr == region_id
+        regions = region if isinstance(region, list) else [region]
+        region_ids = [
+            self._find_voxel_region_id(atlas_arr, atlas_path, r) for r in regions
+        ]
+        region_mask_raw = np.zeros_like(atlas_arr, dtype=bool)
+        for region_id in region_ids:
+            region_mask_raw = region_mask_raw | (atlas_arr == region_id)
+        region_name = "+".join(regions)
         positive_mask = field_arr > 0
         tissue_mask = self._voxel_tissue_mask(img, field_arr.shape[:3], affine)
         analysis_mask = positive_mask & tissue_mask
@@ -341,7 +349,7 @@ class Analyzer:
             analysis_mask,
             affine,
             voxel_size,
-            region_name=region,
+            region_name=region_name,
             analysis_type="cortical",
             atlas=atlas,
             visualize=visualize,
@@ -866,18 +874,25 @@ class Analyzer:
 
         fs_mri = Path(self._pm.freesurfer_mri(self.subject_id))
         seg_dir = Path(self._pm.segmentation(self.subject_id))
+        roi_dir = Path(self._pm.rois(self.subject_id))
+        roi_rel = atlas[len("ROIs/") :] if atlas.startswith("ROIs/") else atlas
         candidates = [
+            fs_mri / atlas,
+            seg_dir / atlas,
+            roi_dir / roi_rel,
             fs_mri / f"{atlas}.mgz",
             fs_mri / f"{atlas}.nii.gz",
             fs_mri / f"{atlas}.nii",
             seg_dir / f"{atlas}.nii.gz",
             seg_dir / f"{atlas}.nii",
+            roi_dir / f"{roi_rel}.nii.gz",
+            roi_dir / f"{roi_rel}.nii",
         ]
         for path in candidates:
             if path.exists():
                 return path
         raise FileNotFoundError(
-            f"Atlas file not found for '{atlas}' in {fs_mri} or {seg_dir}"
+            f"Atlas file not found for '{atlas}' in {fs_mri}, {seg_dir}, or {roi_dir}"
         )
 
     @staticmethod
@@ -932,6 +947,17 @@ class Analyzer:
         region_stripped = region.strip()
         if region_stripped.isdigit():
             return int(region_stripped)
+        id_match = re.search(r"\(ID:\s*(\d+)\)", region_stripped, flags=re.IGNORECASE)
+        if id_match:
+            return int(id_match.group(1))
+
+        roi_id = Analyzer._find_roi_mask_region_id(
+            atlas_arr,
+            atlas_path,
+            region_stripped,
+        )
+        if roi_id is not None:
+            return roi_id
 
         with tempfile.NamedTemporaryFile(suffix=".txt", delete=False, mode="w") as tf:
             stats_path = tf.name
@@ -963,3 +989,41 @@ class Analyzer:
 
         Path(stats_path).unlink()
         raise ValueError(f"Region '{region}' not found in atlas {atlas_path}")
+
+    @staticmethod
+    def _find_roi_mask_region_id(
+        atlas_arr: np.ndarray,
+        atlas_path: Path,
+        region: str,
+    ) -> int | None:
+        """Return label 1 when *region* names a binary ROI mask."""
+        if not np.any(np.isclose(atlas_arr, 1)):
+            return None
+
+        json_path = Analyzer._sidecar_json_path(atlas_path)
+        names = {Analyzer._atlas_stem(atlas_path).lower()}
+        if json_path.is_file():
+            try:
+                with open(json_path) as fh:
+                    metadata = json.load(fh)
+                roi_name = str(metadata.get("name") or "").strip()
+                if roi_name:
+                    names.add(roi_name.lower())
+            except (OSError, json.JSONDecodeError):
+                pass
+
+        return 1 if region.lower() in names else None
+
+    @staticmethod
+    def _atlas_stem(atlas_path: Path) -> str:
+        """Return a display stem for .nii, .nii.gz, and .mgz atlas files."""
+        name = atlas_path.name
+        for suffix in (".nii.gz", ".nii", ".mgz"):
+            if name.endswith(suffix):
+                return name[: -len(suffix)]
+        return atlas_path.stem
+
+    @staticmethod
+    def _sidecar_json_path(atlas_path: Path) -> Path:
+        """Return the BIDS-style JSON sidecar path for a NIfTI/MGZ atlas."""
+        return atlas_path.with_name(f"{Analyzer._atlas_stem(atlas_path)}.json")

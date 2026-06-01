@@ -869,6 +869,7 @@ class AnalyzerTab(QtWidgets.QWidget):
         mgr = VoxelAtlasManager(
             freesurfer_mri_dir=self.pm.freesurfer_mri(subject_id),
             seg_dir=self.pm.segmentation(subject_id),
+            roi_dir=self.pm.rois(subject_id),
         )
         results = mgr.list_atlases()
         if not results:
@@ -2679,13 +2680,7 @@ class AnalyzerTab(QtWidgets.QWidget):
                 config["radius"] = radius_val
                 config["coordinate_space"] = coord_space
             else:  # cortical
-                # For voxel atlas, strip extension to get atlas name for the API
-                atlas_for_api = atlas_name
-                if atlas_for_api and not self.space_mesh.isChecked():
-                    for ext in (".mgz", ".nii.gz", ".nii"):
-                        if atlas_for_api.endswith(ext):
-                            atlas_for_api = atlas_for_api[: -len(ext)]
-                            break
+                atlas_for_api = atlas_name if self.space_mesh.isChecked() else atlas_path
                 config["atlas"] = atlas_for_api
                 config["region"] = region
 

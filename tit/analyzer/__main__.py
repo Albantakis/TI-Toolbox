@@ -91,7 +91,7 @@ def _run_single(data: dict) -> None:
         elif analysis_type == "cortical":
             analyzer.analyze_cortex(
                 atlas=data["atlas"],
-                region=data.get("region", ""),
+                region=data.get("regions") or data.get("region", ""),
                 visualize=visualize,
             )
 

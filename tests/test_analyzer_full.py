@@ -8,6 +8,7 @@ _get_normal_stats, _resolve_output_dir, _maybe_transform_coords,
 _field_values, _node_areas, _resolve_voxel_atlas.
 """
 
+import json
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch, PropertyMock
@@ -60,6 +61,7 @@ def _make_analyzer(space="mesh", output_dir=None, field_path=None, field_name="T
         pm.analysis_output_dir.return_value = "/tmp/out"
         pm.freesurfer_mri.return_value = "/fake/fs/mri"
         pm.segmentation.return_value = "/fake/seg"
+        pm.rois.return_value = "/fake/rois"
         a = Analyzer("001", "sim1", space, output_dir=output_dir)
     return a
 
@@ -639,6 +641,7 @@ class TestResolveVoxelAtlas:
         a = _make_analyzer(space="voxel")
         a._pm.freesurfer_mri.return_value = str(tmp_path / "fs_mri")
         a._pm.segmentation.return_value = str(tmp_path / "seg")
+        a._pm.rois.return_value = str(tmp_path / "rois")
         (tmp_path / "fs_mri").mkdir()
         (tmp_path / "seg").mkdir()
         nii = tmp_path / "seg" / "atlas.nii.gz"
@@ -646,14 +649,88 @@ class TestResolveVoxelAtlas:
         result = a._resolve_voxel_atlas("atlas")
         assert result == nii
 
+    def test_finds_nested_roi_mask(self, tmp_path):
+        a = _make_analyzer(space="voxel")
+        a._pm.freesurfer_mri.return_value = str(tmp_path / "fs_mri")
+        a._pm.segmentation.return_value = str(tmp_path / "seg")
+        a._pm.rois.return_value = str(tmp_path / "ROIs")
+        roi_dir = tmp_path / "ROIs" / "thalamus_functional"
+        roi_dir.mkdir(parents=True)
+        roi = roi_dir / "thalamus_anterior_bilateral_sub-001.nii.gz"
+        roi.touch()
+
+        result = a._resolve_voxel_atlas(
+            "ROIs/thalamus_functional/thalamus_anterior_bilateral_sub-001.nii.gz"
+        )
+
+        assert result == roi
+
     def test_raises_when_not_found(self, tmp_path):
         a = _make_analyzer(space="voxel")
         a._pm.freesurfer_mri.return_value = str(tmp_path / "fs_mri")
         a._pm.segmentation.return_value = str(tmp_path / "seg")
+        a._pm.rois.return_value = str(tmp_path / "rois")
         (tmp_path / "fs_mri").mkdir()
         (tmp_path / "seg").mkdir()
         with pytest.raises(FileNotFoundError, match="Atlas file not found"):
             a._resolve_voxel_atlas("nonexistent")
+
+
+class TestFindVoxelRegionId:
+    """_find_voxel_region_id resolves regular labels and binary ROI masks."""
+
+    def test_id_suffix_region(self):
+        atlas_arr = np.array([[[0, 1], [2, 0]]], dtype=float)
+        result = Analyzer._find_voxel_region_id(
+            atlas_arr,
+            Path("/fake/atlas.nii.gz"),
+            "Some Region (ID: 2)",
+        )
+        assert result == 2
+
+    def test_json_sidecar_binary_roi_mask(self, tmp_path):
+        atlas_path = tmp_path / "thalamus_anterior_bilateral_sub-001.nii.gz"
+        atlas_path.touch()
+        atlas_path.with_name("thalamus_anterior_bilateral_sub-001.json").write_text(
+            json.dumps({"name": "thalamus_anterior_bilateral"})
+        )
+        atlas_arr = np.array([[[0, 1], [1, 0]]], dtype=float)
+
+        result = Analyzer._find_voxel_region_id(
+            atlas_arr,
+            atlas_path,
+            "thalamus_anterior_bilateral",
+        )
+
+        assert result == 1
+
+
+class TestVoxelAtlasManagerRoiMasks:
+    """VoxelAtlasManager discovers nested subject-space ROI masks."""
+
+    def test_discovers_nested_roi_masks_and_lists_json_region(self, tmp_path):
+        from tit.atlas.voxel import VoxelAtlasManager
+
+        roi_dir = tmp_path / "ROIs"
+        nested = roi_dir / "thalamus_functional"
+        nested.mkdir(parents=True)
+        roi = nested / "thalamus_anterior_bilateral_sub-001.nii.gz"
+        roi.touch()
+        roi.with_name("thalamus_anterior_bilateral_sub-001.json").write_text(
+            json.dumps({"name": "thalamus_anterior_bilateral"})
+        )
+
+        mgr = VoxelAtlasManager(roi_dir=str(roi_dir))
+
+        assert mgr.list_atlases() == [
+            (
+                "ROIs/thalamus_functional/thalamus_anterior_bilateral_sub-001.nii.gz",
+                str(roi),
+            )
+        ]
+        assert mgr.list_regions(str(roi)) == [
+            "thalamus_anterior_bilateral (ID: 1)"
+        ]
 
 
 class TestVisualizeMesh:

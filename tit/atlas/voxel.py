@@ -1,10 +1,10 @@
 """Voxel (volumetric) atlas discovery and region listing."""
 
-from __future__ import annotations
-
+import json
 import os
 import subprocess
-from typing import Dict, List, Optional, Tuple
+from glob import glob
+from typing import List, Optional, Tuple
 
 from tit.atlas.constants import VOXEL_ATLAS_FILES, MNI_ATLAS_FILES
 
@@ -18,11 +18,18 @@ class VoxelAtlasManager:
     Args:
         freesurfer_mri_dir: Path to FreeSurfer mri/ directory.
         seg_dir: Path to m2m_{subject}/segmentation/ directory.
+        roi_dir: Path to m2m_{subject}/ROIs/ directory containing user masks.
     """
 
-    def __init__(self, freesurfer_mri_dir: str = "", seg_dir: str = "") -> None:
+    def __init__(
+        self,
+        freesurfer_mri_dir: str = "",
+        seg_dir: str = "",
+        roi_dir: str = "",
+    ) -> None:
         self.freesurfer_mri_dir = freesurfer_mri_dir
         self.seg_dir = seg_dir
+        self.roi_dir = roi_dir
 
     def list_atlases(self) -> List[Tuple[str, str]]:
         """Discover available voxel atlas files for a subject.
@@ -47,6 +54,14 @@ class VoxelAtlasManager:
             if os.path.isfile(labeling):
                 results.append(("labeling.nii.gz", labeling))
 
+        if self.roi_dir and os.path.isdir(self.roi_dir):
+            for path in sorted(
+                glob(os.path.join(self.roi_dir, "**", "*.nii"), recursive=True)
+                + glob(os.path.join(self.roi_dir, "**", "*.nii.gz"), recursive=True)
+            ):
+                rel = os.path.relpath(path, self.roi_dir)
+                results.append((f"ROIs/{rel}", path))
+
         return results
 
     def list_regions(self, atlas_path: str) -> List[str]:
@@ -57,9 +72,11 @@ class VoxelAtlasManager:
         Returns:
             Sorted list of "RegionName (ID: N)" strings.
         """
-        atlas_bname = os.path.splitext(os.path.basename(atlas_path))[0]
-        if atlas_bname.endswith(".nii"):
-            atlas_bname = os.path.splitext(atlas_bname)[0]
+        roi_region = self._roi_mask_region(atlas_path)
+        if roi_region:
+            return [roi_region]
+
+        atlas_bname = _atlas_stem(atlas_path)
         labels_file = os.path.join(
             os.path.dirname(atlas_path), f"{atlas_bname}_labels.txt"
         )
@@ -93,6 +110,21 @@ class VoxelAtlasManager:
         return sorted(set(regions))
 
     @staticmethod
+    def _roi_mask_region(atlas_path: str) -> str | None:
+        """Return a friendly single-label region name for binary ROI masks."""
+        json_path = _sidecar_json_path(atlas_path)
+        if not os.path.isfile(json_path):
+            return None
+        try:
+            with open(json_path) as fh:
+                metadata = json.load(fh)
+        except (OSError, json.JSONDecodeError):
+            return None
+
+        name = str(metadata.get("name") or "").strip() or _atlas_stem(atlas_path)
+        return f"{name} (ID: 1)"
+
+    @staticmethod
     def detect_mni_atlases(atlas_dir: str) -> List[str]:
         """Detect available MNI atlases in an assets directory.
 
@@ -121,3 +153,17 @@ class VoxelAtlasManager:
             return None
         lut_path = os.path.join(self.seg_dir, "labeling_LUT.txt")
         return lut_path if os.path.isfile(lut_path) else None
+
+
+def _atlas_stem(atlas_path: str) -> str:
+    """Return a display stem for .nii, .nii.gz, and .mgz atlas files."""
+    name = os.path.basename(atlas_path)
+    for suffix in (".nii.gz", ".nii", ".mgz"):
+        if name.endswith(suffix):
+            return name[: -len(suffix)]
+    return os.path.splitext(name)[0]
+
+
+def _sidecar_json_path(atlas_path: str) -> str:
+    """Return the BIDS-style JSON sidecar path for a NIfTI/MGZ atlas."""
+    return os.path.join(os.path.dirname(atlas_path), f"{_atlas_stem(atlas_path)}.json")
