@@ -101,7 +101,11 @@ def check_xquartz_version() -> None:
     xquartz_app = Path("/Applications/Utilities/XQuartz.app")
     if not xquartz_app.exists():
         return
-    version = capture(["mdls", "-name", "kMDItemVersion", str(xquartz_app)])
+    try:
+        version = capture(["mdls", "-name", "kMDItemVersion", str(xquartz_app)])
+    except subprocess.CalledProcessError:
+        print("Warning: Could not determine XQuartz version; continuing.")
+        return
     version = version.split('"')[-2] if '"' in version else version
     if version and version > "2.8.0":
         print(
