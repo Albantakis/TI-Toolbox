@@ -603,6 +603,10 @@ def create_simulation_config_file(
         "electrode_coordinates": electrode_coordinates,
         "electrode_coordinate_source": electrode_coordinate_source,
         "intensities": config.intensities,
+        "mti_field_methods": [
+            method.value if hasattr(method, "value") else str(method)
+            for method in config.mti_field_methods
+        ],
         "electrode_geometry": {
             "shape": config.electrode_shape,
             "dimensions": config.electrode_dimensions,

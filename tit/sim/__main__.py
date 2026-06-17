@@ -43,6 +43,7 @@ def main() -> None:
         montages=montages,
         conductivity=data.get("conductivity", "scalar"),
         intensities=data.get("intensities", [1.0, 1.0]),
+        mti_field_methods=data.get("mti_field_methods", ["recursive_ti"]),
         electrode_shape=data.get("electrode_shape", "ellipse"),
         electrode_dimensions=data.get("electrode_dimensions", [8.0, 8.0]),
         gel_thickness=data.get("gel_thickness", 4.0),

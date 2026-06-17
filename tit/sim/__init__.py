@@ -47,6 +47,7 @@ from tit.sim.config import (
     SimulationConfig,
     Montage,
     SimulationMode,
+    MTIFieldMethod,
     parse_intensities,
 )
 from tit.sim.utils import (
@@ -64,6 +65,7 @@ __all__ = [
     "SimulationConfig",
     "Montage",
     "SimulationMode",
+    "MTIFieldMethod",
     "parse_intensities",
     "run_simulation",
     "load_montages",

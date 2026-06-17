@@ -42,6 +42,17 @@ class SimulationMode(Enum):
     MTI = "mTI"
 
 
+class MTIFieldMethod(Enum):
+    """Scalar field methods available for multi-channel TI simulations."""
+
+    RECURSIVE_TI = "recursive_ti"
+    BOTZANOWSKI_MAGNITUDE_AM = "botzanowski_magnitude_am"
+    BOTZANOWSKI_DIRECTIONAL_AM = "botzanowski_directional_am"
+    BOTZANOWSKI_DIRECTIONAL_AM_AVG = "botzanowski_directional_am_ti_avg"
+    GROSSMAN_EXT_DIRECTIONAL_AM = "grossman_ext_directional_am"
+    GROSSMAN_EXT_DIRECTIONAL_AM_AVG = "grossman_ext_directional_am_ti_avg"
+
+
 class MontageMode(Enum):
     """How electrode positions are specified.
 
@@ -189,6 +200,9 @@ class SimulationConfig:
         Per-pair current intensities in mA.  Length must be 1 (broadcast
         to all pairs) or match the total number of electrode pairs.
         Defaults to ``[1.0, 1.0]``.
+    mti_field_methods : list[MTIFieldMethod | str]
+        Scalar mTI measures to compute for multipolar montages.  Defaults
+        to recursive TI for compatibility with earlier simulator outputs.
     electrode_shape : str
         Electrode shape (``"ellipse"`` or ``"rect"``).
     electrode_dimensions : list[float]
@@ -235,6 +249,9 @@ class SimulationConfig:
     montages: list[Montage]
     conductivity: str = "scalar"
     intensities: list[float] = field(default_factory=lambda: [1.0, 1.0])
+    mti_field_methods: list[MTIFieldMethod | str] = field(
+        default_factory=lambda: [MTIFieldMethod.RECURSIVE_TI]
+    )
     electrode_shape: str = "ellipse"
     electrode_dimensions: list[float] = field(default_factory=lambda: [8.0, 8.0])
     gel_thickness: float = 4.0
@@ -257,6 +274,19 @@ class SimulationConfig:
                 f"Invalid conductivity {self.conductivity!r}, "
                 f"must be one of {_VALID_CONDUCTIVITIES}"
             )
+        if not self.mti_field_methods:
+            raise ValueError("At least one mTI field method must be selected.")
+        self.mti_field_methods = [
+            method
+            if isinstance(method, MTIFieldMethod)
+            else MTIFieldMethod(str(method))
+            for method in self.mti_field_methods
+        ]
+
+    @property
+    def primary_mti_field_method(self) -> MTIFieldMethod:
+        """First selected mTI field method, used as the primary output."""
+        return self.mti_field_methods[0]
 
 
 def parse_intensities(s: str) -> list[float]:

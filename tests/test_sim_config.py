@@ -22,6 +22,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from tit.sim.config import (
     SimulationMode,
+    MTIFieldMethod,
     Montage,
     SimulationConfig,
     parse_intensities,
@@ -221,10 +222,45 @@ class TestSimulationConfig:
             montages=[],
         )
         assert config.conductivity == "scalar"
+        assert config.mti_field_methods == [MTIFieldMethod.RECURSIVE_TI]
         assert config.electrode_shape == "ellipse"
         assert config.electrode_dimensions == [8.0, 8.0]
         assert config.gel_thickness == 4.0
         assert config.rubber_thickness == 2.0
+
+    def test_mti_field_method_strings_are_coerced(self):
+        config = SimulationConfig(
+            subject_id="001",
+            montages=[],
+            mti_field_methods=[
+                "botzanowski_magnitude_am",
+                MTIFieldMethod.GROSSMAN_EXT_DIRECTIONAL_AM,
+            ],
+        )
+        assert config.mti_field_methods == [
+            MTIFieldMethod.BOTZANOWSKI_MAGNITUDE_AM,
+            MTIFieldMethod.GROSSMAN_EXT_DIRECTIONAL_AM,
+        ]
+        assert (
+            config.primary_mti_field_method
+            == MTIFieldMethod.BOTZANOWSKI_MAGNITUDE_AM
+        )
+
+    def test_empty_mti_field_methods_rejected(self):
+        with pytest.raises(ValueError, match="At least one mTI field method"):
+            SimulationConfig(
+                subject_id="001",
+                montages=[],
+                mti_field_methods=[],
+            )
+
+    def test_invalid_mti_field_method_rejected(self):
+        with pytest.raises(ValueError):
+            SimulationConfig(
+                subject_id="001",
+                montages=[],
+                mti_field_methods=["not_a_metric"],
+            )
 
     def test_default_mapping_options(self):
         config = SimulationConfig(

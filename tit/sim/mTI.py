@@ -30,10 +30,19 @@ from copy import deepcopy
 
 import numpy as np
 from simnibs import mesh_io, sim_struct
-from simnibs.utils import TI_utils as TI
 
 from tit import constants as const
-from tit.calc import get_nTI_vectors, get_TI_vectors
+from tit.calc import (
+    MTI_METRIC_BOTZANOWSKI_DIRECTIONAL_AM,
+    MTI_METRIC_BOTZANOWSKI_DIRECTIONAL_AM_AVG,
+    MTI_METRIC_GROSSMAN_EXT_DIRECTIONAL_AM,
+    MTI_METRIC_GROSSMAN_EXT_DIRECTIONAL_AM_AVG,
+    MTI_METRIC_RECURSIVE_TI,
+    compute_botzanowski_directional_am_stats,
+    compute_grossman_ext_directional_am_stats,
+    compute_mti_metric_field,
+    get_TI_vectors,
+)
 from tit.sim.base import BaseSimulation
 from tit.sim.config import SimulationMode
 from tit.sim.utils import (
@@ -157,25 +166,54 @@ class mTISimulation(BaseSimulation):
                 meshes[0], ti_vecs, dirs["ti_mesh"], f"{name}_{suffix}.msh"
             )
 
-        # Final mTI using recursive binary-tree combination
-        mti_vectors = get_nTI_vectors(e_fields)
-        mti_field = np.linalg.norm(mti_vectors, axis=1)
-        mout = deepcopy(meshes[0])
-        mout.elmdata = []
-        mout.add_element_field(mti_field, "TI_Max")
-
-        mti_path = os.path.join(dirs["mti_mesh"], f"{name}_mTI.msh")
-        mesh_io.write_msh(mout, mti_path)
-        mout.view(visible_tags=[1002, 1006], visible_fields="TI_Max").write_opt(
-            mti_path
+        # Final mTI scalar field(s).  Keep the historical recursive output
+        # filename for compatibility with Analyzer/reporting code.
+        mti_paths = []
+        methods = self.config.mti_field_methods
+        self.logger.info(
+            "mTI field methods: %s",
+            ", ".join(
+                method.value if hasattr(method, "value") else str(method)
+                for method in methods
+            ),
         )
-        self.logger.info(f"mTI_max saved: {mti_path}")
+        stats_cache = {}
+        for method in methods:
+            metric = method.value if hasattr(method, "value") else str(method)
+            mti_field = self._compute_mti_metric_field(e_fields, metric, stats_cache)
+            mout = deepcopy(meshes[0])
+            mout.elmdata = []
+            mout.add_element_field(mti_field, "TI_Max")
+
+            filename = (
+                f"{name}_mTI.msh"
+                if metric == MTI_METRIC_RECURSIVE_TI
+                else f"{name}_mTI_{metric}.msh"
+            )
+            mti_path = os.path.join(dirs["mti_mesh"], filename)
+            mesh_io.write_msh(mout, mti_path)
+            mout.view(visible_tags=[1002, 1006], visible_fields="TI_Max").write_opt(
+                mti_path
+            )
+            mti_paths.append((metric, mti_path))
+            self.logger.info(f"mTI field saved ({metric}): {mti_path}")
 
         # Field extraction — mTI mesh and all intermediate TI meshes
         self.logger.info("Field extraction: Started")
-        extract_fields(
-            mti_path, dirs["mti_mesh"], f"{name}_mTI", self.m2m_dir, sid, self.logger
-        )
+        for metric, mti_path in mti_paths:
+            base_name = (
+                f"{name}_mTI"
+                if metric == MTI_METRIC_RECURSIVE_TI
+                else f"{name}_mTI_{metric}"
+            )
+            extract_fields(
+                mti_path,
+                dirs["mti_mesh"],
+                base_name,
+                self.m2m_dir,
+                sid,
+                self.logger,
+            )
         for suffix in ti_pair_suffixes:
             extract_fields(
                 os.path.join(dirs["ti_mesh"], f"{name}_{suffix}.msh"),
@@ -191,7 +229,8 @@ class mTISimulation(BaseSimulation):
         # final directories (hf_mesh/)
         self._organize_files(dirs)
 
-        self._generate_central_surface(mti_path, dirs["mti_surfaces"])
+        primary_mti_path = mti_paths[0][1]
+        self._generate_central_surface(primary_mti_path, dirs["mti_surfaces"])
 
         self.logger.info("NIfTI transformation: Started")
         transform_to_nifti(
@@ -209,7 +248,38 @@ class mTISimulation(BaseSimulation):
 
         convert_t1_to_mni(self.m2m_dir, sid, self.logger)
 
-        return mti_path
+        return primary_mti_path
+
+    @staticmethod
+    def _compute_mti_metric_field(e_fields, metric: str, stats_cache: dict):
+        """Compute one scalar mTI field, caching paired directional stats."""
+        if metric in (
+            MTI_METRIC_BOTZANOWSKI_DIRECTIONAL_AM,
+            MTI_METRIC_BOTZANOWSKI_DIRECTIONAL_AM_AVG,
+        ):
+            if "botzanowski_directional" not in stats_cache:
+                stats_cache["botzanowski_directional"] = (
+                    compute_botzanowski_directional_am_stats(e_fields)
+                )
+            stats = stats_cache["botzanowski_directional"]
+            if metric == MTI_METRIC_BOTZANOWSKI_DIRECTIONAL_AM:
+                return np.linalg.norm(stats["vectors"], axis=1)
+            return stats["avg"]
+
+        if metric in (
+            MTI_METRIC_GROSSMAN_EXT_DIRECTIONAL_AM,
+            MTI_METRIC_GROSSMAN_EXT_DIRECTIONAL_AM_AVG,
+        ):
+            if "grossman_ext_directional" not in stats_cache:
+                stats_cache["grossman_ext_directional"] = (
+                    compute_grossman_ext_directional_am_stats(e_fields)
+                )
+            stats = stats_cache["grossman_ext_directional"]
+            if metric == MTI_METRIC_GROSSMAN_EXT_DIRECTIONAL_AM:
+                return np.linalg.norm(stats["vectors"], axis=1)
+            return stats["avg"]
+
+        return compute_mti_metric_field(e_fields, metric)
 
     def _save_ti_vectors(
         self, base_mesh, ti_vectors, output_dir: str, filename: str

@@ -29,6 +29,18 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TI_CURRENTS = "5.0,5.0"
 DEFAULT_MTI_CURRENTS = "5.0,5.0,5.0,5.0"
+MTI_FIELD_METHOD_CHOICES = (
+    ("Recursive TI", "recursive_ti", True),
+    ("Botzanowski magnitude AM", "botzanowski_magnitude_am", False),
+    ("Botzanowski directional AM", "botzanowski_directional_am", False),
+    ("Botzanowski directional AM avg", "botzanowski_directional_am_ti_avg", False),
+    ("Grossman ext directional AM", "grossman_ext_directional_am", False),
+    (
+        "Grossman ext directional AM avg",
+        "grossman_ext_directional_am_ti_avg",
+        False,
+    ),
+)
 
 from PyQt5 import QtWidgets, QtCore
 from tit.gui.confirmation_dialog import ConfirmationDialog
@@ -49,6 +61,7 @@ from tit.reporting import SimulationReportGenerator
 from tit.sim import (
     SimulationConfig,
     Montage,
+    MTIFieldMethod,
     parse_intensities,
 )
 from tit.sim.utils import (
@@ -264,6 +277,25 @@ class SimulatorTab(QtWidgets.QWidget):
         row2b.addWidget(self.thickness_input)
         row2b.addStretch()
         global_layout.addLayout(row2b)
+
+        # Row 3: mTI scalar fields
+        row3 = QtWidgets.QVBoxLayout()
+        self.mti_methods_label = QtWidgets.QLabel("mTI Field Methods:")
+        row3.addWidget(self.mti_methods_label)
+        methods_wrap = QtWidgets.QWidget()
+        methods_layout = QtWidgets.QGridLayout(methods_wrap)
+        methods_layout.setContentsMargins(0, 0, 0, 0)
+        methods_layout.setHorizontalSpacing(8)
+        methods_layout.setVerticalSpacing(2)
+        self.mti_method_checks = []
+        for idx, (label, value, checked) in enumerate(MTI_FIELD_METHOD_CHOICES):
+            cb = QtWidgets.QCheckBox(label)
+            cb.setProperty("value", value)
+            cb.setChecked(checked)
+            self.mti_method_checks.append(cb)
+            methods_layout.addWidget(cb, idx // 2, idx % 2)
+        row3.addWidget(methods_wrap)
+        global_layout.addLayout(row3)
 
         # ── Assemble 2-column layout ───────────────────────────────────────
         # Right panel: Montage/Flex selection on top, Global Parameters below
@@ -1231,6 +1263,15 @@ class SimulatorTab(QtWidgets.QWidget):
         """Refresh the selection list (called after adding montage)."""
         self._refresh_selection_list()
 
+    def _selected_mti_field_methods(self):
+        """Return selected mTI scalar field method values."""
+        methods = [
+            cb.property("value")
+            for cb in getattr(self, "mti_method_checks", [])
+            if cb.isChecked()
+        ]
+        return [MTIFieldMethod(method).value for method in methods]
+
     def run_simulation(self):
         """Run the simulation with the per-job table configuration."""
         try:
@@ -1270,6 +1311,14 @@ class SimulatorTab(QtWidgets.QWidget):
             )
             dimensions = self.dimensions_input.text() or "8,8"
             thickness = self.thickness_input.text() or "4"
+            mti_field_methods = self._selected_mti_field_methods()
+            if not mti_field_methods:
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    "Warning",
+                    "Please select at least one mTI field method.",
+                )
+                return
 
             # Validate numeric inputs
             try:
@@ -1324,7 +1373,8 @@ class SimulatorTab(QtWidgets.QWidget):
                 + (f"\n  ... and {len(jobs)-15} more" if len(jobs) > 15 else "")
                 + f"\n\nGlobal Parameters:\n"
                 f"* Anisotropy: {conductivity}\n"
-                f"* Electrode: {electrode_shape} ({dimensions} mm, {thickness} mm thick)"
+                f"* Electrode: {electrode_shape} ({dimensions} mm, {thickness} mm thick)\n"
+                f"* mTI fields: {', '.join(mti_field_methods)}"
             )
             if not ConfirmationDialog.confirm(
                 self,
@@ -1372,6 +1422,7 @@ class SimulatorTab(QtWidgets.QWidget):
             self._last_electrode_shape = electrode_shape
             self._last_dimensions = dimensions
             self._last_thickness = thickness
+            self._last_mti_field_methods = mti_field_methods
 
             # ── Console summary ────────────────────────────────────────────
             total_simulations = len(jobs)
@@ -1382,6 +1433,7 @@ class SimulatorTab(QtWidgets.QWidget):
             self.update_output(
                 f"Electrode: {electrode_shape} ({dimensions} mm, {thickness} mm thick)"
             )
+            self.update_output(f"mTI fields: {', '.join(mti_field_methods)}")
 
             # ── Report generator ───────────────────────────────────────────
             self.simulation_session_id = datetime.datetime.now().strftime(
@@ -1458,6 +1510,7 @@ class SimulatorTab(QtWidgets.QWidget):
                 montages=montage_list,
                 conductivity=conductivity,
                 intensities=parse_intensities(first_current),
+                mti_field_methods=mti_field_methods,
                 electrode_shape=electrode_shape,
                 electrode_dimensions=electrode_dims,
                 gel_thickness=float(thickness),
@@ -1730,6 +1783,8 @@ class SimulatorTab(QtWidgets.QWidget):
         self.electrode_shape_ellipse.setEnabled(False)
         self.dimensions_input.setEnabled(False)
         self.thickness_input.setEnabled(False)
+        for cb in getattr(self, "mti_method_checks", []):
+            cb.setEnabled(False)
 
     def enable_controls(self):
         """Re-enable all controls."""
@@ -1749,6 +1804,8 @@ class SimulatorTab(QtWidgets.QWidget):
         self.electrode_shape_ellipse.setEnabled(True)
         self.dimensions_input.setEnabled(True)
         self.thickness_input.setEnabled(True)
+        for cb in getattr(self, "mti_method_checks", []):
+            cb.setEnabled(True)
 
     def clear_console(self):
         """Clear the output console."""
