@@ -20,10 +20,16 @@ ExConfig
     Configuration dataclass for exhaustive search.
 ExResult
     Result container returned by :func:`run_ex_search`.
+MExConfig
+    Configuration dataclass for multipolar exhaustive search.
+MExResult
+    Result container returned by :func:`run_m_ex_search`.
 run_flex_search
     Run differential-evolution electrode placement optimization.
 run_ex_search
     Run exhaustive grid search over electrode combinations.
+run_m_ex_search
+    Run multipolar exhaustive grid search over four electrode pairs.
 
 See Also
 --------
@@ -37,9 +43,9 @@ from tit.opt.config import (
     FlexResult,
     ExConfig,
     ExResult,
+    MExConfig,
+    MExResult,
 )
-from tit.opt.ex.ex import run_ex_search
-from tit.opt.flex.flex import run_flex_search
 
 __all__ = [
     # Config classes
@@ -47,7 +53,26 @@ __all__ = [
     "FlexResult",
     "ExConfig",
     "ExResult",
+    "MExConfig",
+    "MExResult",
     # Functions
     "run_flex_search",
     "run_ex_search",
+    "run_m_ex_search",
 ]
+
+
+def __getattr__(name):
+    if name == "run_ex_search":
+        from tit.opt.ex.ex import run_ex_search
+
+        return run_ex_search
+    if name == "run_flex_search":
+        from tit.opt.flex.flex import run_flex_search
+
+        return run_flex_search
+    if name == "run_m_ex_search":
+        from tit.opt.mex.mex import run_m_ex_search
+
+        return run_m_ex_search
+    raise AttributeError(name)

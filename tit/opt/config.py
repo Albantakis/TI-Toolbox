@@ -13,6 +13,10 @@ ExConfig
     Full configuration for exhaustive (grid) search optimization.
 ExResult
     Result container for a completed exhaustive search run.
+MExConfig
+    Full configuration for multipolar exhaustive search.
+MExResult
+    Result container for a completed multipolar exhaustive search run.
 
 See Also
 --------
@@ -541,6 +545,88 @@ class ExResult:
     ExConfig : Configuration consumed by :func:`~tit.opt.ex.ex.run_ex_search`.
     tit.opt.ex.ex.run_ex_search : Returns this result.
     """
+
+    success: bool
+    output_dir: str
+    n_combinations: int
+    results_csv: str | None = None
+    best_composite_csv: str | None = None
+    config_json: str | None = None
+
+
+@dataclass
+class MExConfig:
+    """Full configuration for multipolar exhaustive search.
+
+    m-ex-search evaluates four bipolar electrode pairs (eight electrodes)
+    with one fixed current per pair and ranks candidates by one selected
+    multipolar TI metric.
+    """
+
+    @dataclass
+    class BucketElectrodes:
+        """Separate electrode lists for each of the four bipolar pairs."""
+
+        e1_plus: list[str]
+        e1_minus: list[str]
+        e2_plus: list[str]
+        e2_minus: list[str]
+        e3_plus: list[str]
+        e3_minus: list[str]
+        e4_plus: list[str]
+        e4_minus: list[str]
+
+    @dataclass
+    class PoolElectrodes:
+        """Single electrode pool used for all eight electrode positions."""
+
+        electrodes: list[str]
+
+    class MTIMetric(StrEnum):
+        """Multipolar TI metric used to score each candidate montage."""
+
+        RECURSIVE_TI = "recursive_ti"
+        BOTZANOWSKI_MAGNITUDE_AM = "botzanowski_magnitude_am"
+        BOTZANOWSKI_DIRECTIONAL_AM = "botzanowski_directional_am"
+        BOTZANOWSKI_DIRECTIONAL_AM_AVG = "botzanowski_directional_am_ti_avg"
+        GROSSMAN_EXT_DIRECTIONAL_AM = "grossman_ext_directional_am"
+        GROSSMAN_EXT_DIRECTIONAL_AM_AVG = "grossman_ext_directional_am_ti_avg"
+
+    subject_id: str
+    leadfield_hdf: str
+    roi_name: str
+    electrodes: BucketElectrodes | PoolElectrodes
+    current_mA: float = 5.0
+    mti_metric: MTIMetric | str = MTIMetric.RECURSIVE_TI
+    roi_radius: float = 3.0
+    run_name: str | None = None
+    symmetric_bucket: bool = False
+    symmetry_eeg_csv: str | None = None
+    symmetry_pairing: str = "within_pairs"
+
+    def __post_init__(self):
+        if isinstance(self.electrodes, dict):
+            if "electrodes" in self.electrodes:
+                self.electrodes = MExConfig.PoolElectrodes(**self.electrodes)
+            else:
+                self.electrodes = MExConfig.BucketElectrodes(**self.electrodes)
+        if isinstance(self.mti_metric, str):
+            self.mti_metric = MExConfig.MTIMetric(self.mti_metric)
+        if not self.roi_name.endswith((".csv", ".nii.gz", ".nii")):
+            self.roi_name += ".csv"
+        if self.current_mA <= 0:
+            raise ValueError("current_mA must be positive")
+        if self.symmetric_bucket and isinstance(
+            self.electrodes, MExConfig.PoolElectrodes
+        ):
+            raise ValueError("symmetric_bucket is only supported for bucket electrodes")
+        if self.symmetry_pairing not in {"within_pairs", "cross_pairs"}:
+            raise ValueError("symmetry_pairing must be within_pairs or cross_pairs")
+
+
+@dataclass
+class MExResult:
+    """Result from a multipolar exhaustive search run."""
 
     success: bool
     output_dir: str

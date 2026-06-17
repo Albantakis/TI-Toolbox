@@ -13,9 +13,28 @@ get_nTI_vectors
     Generalised N-channel TI via recursive binary-tree pairing.
 get_mTI_vectors
     4-channel mTI (convenience wrapper around :func:`get_TI_vectors`).
+compute_mti_metric_field
+    Compute scalar mTI metric fields for multipolar search workflows.
 """
 
 import numpy as np
+
+
+MTI_METRIC_RECURSIVE_TI = "recursive_ti"
+MTI_METRIC_BOTZANOWSKI_MAGNITUDE_AM = "botzanowski_magnitude_am"
+MTI_METRIC_BOTZANOWSKI_DIRECTIONAL_AM = "botzanowski_directional_am"
+MTI_METRIC_BOTZANOWSKI_DIRECTIONAL_AM_AVG = "botzanowski_directional_am_ti_avg"
+MTI_METRIC_GROSSMAN_EXT_DIRECTIONAL_AM = "grossman_ext_directional_am"
+MTI_METRIC_GROSSMAN_EXT_DIRECTIONAL_AM_AVG = "grossman_ext_directional_am_ti_avg"
+
+MTI_METRICS = {
+    MTI_METRIC_RECURSIVE_TI,
+    MTI_METRIC_BOTZANOWSKI_MAGNITUDE_AM,
+    MTI_METRIC_BOTZANOWSKI_DIRECTIONAL_AM,
+    MTI_METRIC_BOTZANOWSKI_DIRECTIONAL_AM_AVG,
+    MTI_METRIC_GROSSMAN_EXT_DIRECTIONAL_AM,
+    MTI_METRIC_GROSSMAN_EXT_DIRECTIONAL_AM_AVG,
+}
 
 
 def get_TI_vectors(E1_org, E2_org):
@@ -201,6 +220,217 @@ def get_nTI_vectors(fields):
         current = next_round
 
     return current[0]
+
+
+def compute_mti_vectors(fields, metric=MTI_METRIC_RECURSIVE_TI):
+    """Compute vector-valued mTI output for metrics with a best direction."""
+    metric = _normalize_mti_metric(metric)
+    if metric == MTI_METRIC_RECURSIVE_TI:
+        return get_nTI_vectors(fields)
+    if metric == MTI_METRIC_BOTZANOWSKI_DIRECTIONAL_AM:
+        return compute_botzanowski_directional_am_stats(fields)["vectors"]
+    if metric == MTI_METRIC_GROSSMAN_EXT_DIRECTIONAL_AM:
+        return compute_grossman_ext_directional_am_stats(fields)["vectors"]
+    raise ValueError(f"Metric does not produce mTI vectors: {metric!r}")
+
+
+def compute_mti_metric_field(fields, metric=MTI_METRIC_RECURSIVE_TI):
+    """Compute a scalar mTI field for one selected multipolar metric.
+
+    Parameters
+    ----------
+    fields : list of np.ndarray
+        Electric field vectors, one array per bipolar electrode pair.
+    metric : str
+        One of :data:`MTI_METRICS`.
+
+    Returns
+    -------
+    np.ndarray
+        Scalar metric value for each mesh element/voxel.
+    """
+    metric = _normalize_mti_metric(metric)
+    if metric == MTI_METRIC_RECURSIVE_TI:
+        return np.linalg.norm(get_nTI_vectors(fields), axis=1)
+    if metric == MTI_METRIC_BOTZANOWSKI_MAGNITUDE_AM:
+        return compute_botzanowski_magnitude_am_vectors(fields)
+    if metric == MTI_METRIC_BOTZANOWSKI_DIRECTIONAL_AM:
+        return np.linalg.norm(
+            compute_botzanowski_directional_am_stats(fields)["vectors"], axis=1
+        )
+    if metric == MTI_METRIC_BOTZANOWSKI_DIRECTIONAL_AM_AVG:
+        return compute_botzanowski_directional_am_stats(fields)["avg"]
+    if metric == MTI_METRIC_GROSSMAN_EXT_DIRECTIONAL_AM:
+        return np.linalg.norm(
+            compute_grossman_ext_directional_am_stats(fields)["vectors"], axis=1
+        )
+    if metric == MTI_METRIC_GROSSMAN_EXT_DIRECTIONAL_AM_AVG:
+        return compute_grossman_ext_directional_am_stats(fields)["avg"]
+    raise ValueError(f"Unsupported mTI metric: {metric!r}")
+
+
+def compute_botzanowski_magnitude_am_vectors(fields):
+    """Compute direct-field AM from the envelope of ``||E(t)||``."""
+    mti_amp, _env_max = _botzanowski_magnitude_am_components(fields)
+    return mti_amp
+
+
+def compute_botzanowski_directional_am_stats(fields):
+    """Return best-direction and orientation-averaged Botzanowski AM fields."""
+    vectors, peak_env, avg = _botzanowski_directional_am_components(fields)
+    return {"vectors": vectors, "avg": avg, "peak_env": peak_env}
+
+
+def compute_grossman_ext_directional_am_stats(fields):
+    """Return best-direction and orientation-averaged full-field AM fields."""
+    vectors, peak_env, avg = _grossman_ext_directional_am_components(fields)
+    return {"vectors": vectors, "avg": avg, "peak_env": peak_env}
+
+
+def _normalize_mti_metric(metric):
+    metric = metric.value if hasattr(metric, "value") else str(metric)
+    if metric not in MTI_METRICS:
+        raise ValueError(f"Unsupported mTI metric: {metric!r}")
+    return metric
+
+
+def _botzanowski_magnitude_am_components(fields):
+    arrs = _validate_field_list(fields)
+    weights = _pair_weights(len(arrs))
+
+    s0 = np.zeros(arrs[0].shape[0], dtype=np.float64)
+    for field in arrs:
+        s0 += np.sum(field * field, axis=1)
+    s0 *= 0.5
+
+    b = np.zeros_like(s0)
+    for pair_idx, weight in enumerate(weights):
+        f1 = arrs[2 * pair_idx]
+        f2 = arrs[2 * pair_idx + 1]
+        b += weight * np.sum(f1 * f2, axis=1)
+
+    abs_b = np.abs(b)
+    smin = np.maximum(s0 - abs_b, 0.0)
+    smax = np.maximum(s0 + abs_b, 0.0)
+    env_min = np.sqrt(2 * smin)
+    env_max = np.sqrt(2 * smax)
+    return env_max - env_min, env_max
+
+
+def _botzanowski_directional_am_components(fields):
+    arrs = _validate_field_list(fields)
+    weights = _pair_weights(len(arrs))
+    directions = _fibonacci_sphere(192)
+    chunk_size = 16384
+
+    n_vox = arrs[0].shape[0]
+    best_vectors = np.zeros((n_vox, 3), dtype=np.float64)
+    best_peak = np.zeros(n_vox, dtype=np.float64)
+    avg_amp = np.zeros(n_vox, dtype=np.float64)
+
+    for start in range(0, n_vox, chunk_size):
+        stop = min(start + chunk_size, n_vox)
+        proj_fields = [field[start:stop] @ directions.T for field in arrs]
+
+        s0 = np.zeros_like(proj_fields[0], dtype=np.float64)
+        for proj in proj_fields:
+            s0 += proj * proj
+        s0 *= 0.5
+
+        b = np.zeros_like(s0, dtype=np.float64)
+        for pair_idx, weight in enumerate(weights):
+            p1 = proj_fields[2 * pair_idx]
+            p2 = proj_fields[2 * pair_idx + 1]
+            b += weight * (p1 * p2)
+
+        abs_b = np.abs(b)
+        smin = np.maximum(s0 - abs_b, 0.0)
+        smax = np.maximum(s0 + abs_b, 0.0)
+        env_min = np.sqrt(2 * smin)
+        env_max = np.sqrt(2 * smax)
+        amp = env_max - env_min
+
+        avg_amp[start:stop] = np.mean(amp, axis=1)
+        best_idx = np.argmax(amp, axis=1)
+        rows = np.arange(stop - start)
+        best_amp = amp[rows, best_idx]
+        best_dirs = directions[best_idx]
+        best_vectors[start:stop] = best_dirs * best_amp[:, None]
+        best_peak[start:stop] = env_max[rows, best_idx]
+
+    return best_vectors, best_peak, avg_amp
+
+
+def _grossman_ext_directional_am_components(fields):
+    arrs = _validate_field_list(fields)
+    directions = _fibonacci_sphere(192)
+    chunk_size = 16384
+
+    n_vox = arrs[0].shape[0]
+    best_vectors = np.zeros((n_vox, 3), dtype=np.float64)
+    best_peak_env = np.zeros(n_vox, dtype=np.float64)
+    avg_amp = np.zeros(n_vox, dtype=np.float64)
+
+    for start in range(0, n_vox, chunk_size):
+        stop = min(start + chunk_size, n_vox)
+        proj_fields = [field[start:stop] @ directions.T for field in arrs]
+
+        env_psi0 = np.zeros((stop - start, directions.shape[0]), dtype=np.float64)
+        env_psi_pi = np.zeros_like(env_psi0)
+
+        for pair_idx in range(len(arrs) // 2):
+            a = proj_fields[2 * pair_idx]
+            b = proj_fields[2 * pair_idx + 1]
+            env_psi0 += np.abs(a + b)
+            env_psi_pi += np.abs(a - b)
+
+        env_hi = np.maximum(env_psi0, env_psi_pi)
+        env_lo = np.minimum(env_psi0, env_psi_pi)
+        amp = env_hi - env_lo
+
+        avg_amp[start:stop] = np.mean(amp, axis=1)
+        best_idx = np.argmax(amp, axis=1)
+        rows = np.arange(stop - start)
+        best_amp = amp[rows, best_idx]
+        best_peak_env[start:stop] = env_hi[rows, best_idx]
+        best_vectors[start:stop] = directions[best_idx] * best_amp[:, None]
+
+    return best_vectors, best_peak_env, avg_amp
+
+
+def _validate_field_list(fields):
+    arrs = [np.asarray(field, dtype=np.float64) for field in fields]
+    n = len(arrs)
+    if n < 2 or n % 2 != 0:
+        raise ValueError(f"mTI requires an even number of fields >= 2, got {n}")
+    ref_shape = arrs[0].shape
+    if len(ref_shape) != 2 or ref_shape[1] != 3:
+        raise ValueError(f"Fields must have shape (N, 3), got {ref_shape}")
+    for i, arr in enumerate(arrs[1:], start=2):
+        if arr.shape != ref_shape:
+            raise ValueError(
+                "All fields must have identical shape; "
+                f"field 1 has {ref_shape}, field {i} has {arr.shape}"
+            )
+    return arrs
+
+
+def _pair_weights(num_fields: int):
+    return [1.0] * (num_fields // 2)
+
+
+def _fibonacci_sphere(num_dirs: int) -> np.ndarray:
+    """Return approximately uniform unit vectors on the sphere."""
+    if num_dirs < 2:
+        return np.array([[0.0, 0.0, 1.0]], dtype=np.float64)
+    i = np.arange(num_dirs, dtype=np.float64)
+    phi = np.pi * (3.0 - np.sqrt(5.0))
+    y = 1.0 - 2.0 * i / (num_dirs - 1)
+    radius = np.sqrt(np.maximum(0.0, 1.0 - y * y))
+    theta = phi * i
+    x = np.cos(theta) * radius
+    z = np.sin(theta) * radius
+    return np.stack((x, y, z), axis=1)
 
 
 def get_mTI_vectors(E1_org, E2_org, E3_org, E4_org):

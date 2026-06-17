@@ -73,12 +73,26 @@ def save_run_config(config, n_combinations: int, output_dir: str, logger: Any) -
         "leadfield_hdf": config.leadfield_hdf,
         "electrode_mode": electrode_mode,
         "electrodes": electrode_info,
-        "total_current_mA": config.total_current,
-        "current_step_mA": config.current_step,
-        "channel_limit_mA": config.channel_limit,
         "n_combinations": n_combinations,
         "run_name": config.run_name,
     }
+    if hasattr(config, "total_current"):
+        run_info.update(
+            {
+                "total_current_mA": config.total_current,
+                "current_step_mA": config.current_step,
+                "channel_limit_mA": config.channel_limit,
+            }
+        )
+    if hasattr(config, "current_mA"):
+        run_info["current_mA"] = config.current_mA
+    if hasattr(config, "mti_metric"):
+        metric = config.mti_metric.value if hasattr(config.mti_metric, "value") else config.mti_metric
+        run_info["mti_metric"] = metric
+    if hasattr(config, "symmetric_bucket"):
+        run_info["symmetric_bucket"] = bool(config.symmetric_bucket)
+    if hasattr(config, "symmetry_pairing"):
+        run_info["symmetry_pairing"] = config.symmetry_pairing
 
     path = os.path.join(output_dir, "run_config.json")
     with open(path, "w") as f:
@@ -380,6 +394,9 @@ def _build_montage_score_records(results: dict, roi_name: str) -> list[dict]:
 
 
 def _find_eeg_positions_csv(config) -> str | None:
+    if hasattr(config, "mti_metric"):
+        return None
+
     try:
         from tit.paths import get_path_manager
 
