@@ -296,6 +296,7 @@ class SimulatorTab(QtWidgets.QWidget):
             methods_layout.addWidget(cb, idx // 2, idx % 2)
         row3.addWidget(methods_wrap)
         global_layout.addLayout(row3)
+        self._update_mti_method_controls_state()
 
         # ── Assemble 2-column layout ───────────────────────────────────────
         # Right panel: Montage/Flex selection on top, Global Parameters below
@@ -549,6 +550,7 @@ class SimulatorTab(QtWidgets.QWidget):
 
         # Auto-select the new card
         self._select_card(idx)
+        self._update_mti_method_controls_state()
 
     def _apply_card_style(self, card, selected):
         """Apply normal or selected visual style to a job card."""
@@ -596,6 +598,7 @@ class SimulatorTab(QtWidgets.QWidget):
                 self._apply_card_style(self._job_cards[new_idx], selected=True)
         elif self._selected_card_idx > row:
             self._selected_card_idx -= 1
+        self._update_mti_method_controls_state()
 
     def _remove_selected_job_row(self):
         """Remove the currently selected job card."""
@@ -620,6 +623,7 @@ class SimulatorTab(QtWidgets.QWidget):
                 if i == self._selected_card_idx:
                     self._refresh_selection_list()
                 break
+        self._update_mti_method_controls_state()
 
     def _on_row_source_changed(self, text):
         """Reset selections when source type changes for a card."""
@@ -1263,6 +1267,21 @@ class SimulatorTab(QtWidgets.QWidget):
         """Refresh the selection list (called after adding montage)."""
         self._refresh_selection_list()
 
+    def _has_mti_job_row(self):
+        """Return True when at least one job row is configured as multipolar."""
+        return any(
+            card.mode_combo.currentText() == "M"
+            for card in getattr(self, "_job_cards", [])
+        )
+
+    def _update_mti_method_controls_state(self):
+        """Enable mTI method controls only when a multipolar job row exists."""
+        enabled = self._has_mti_job_row() and not self.simulation_running
+        if hasattr(self, "mti_methods_label"):
+            self.mti_methods_label.setEnabled(enabled)
+        for cb in getattr(self, "mti_method_checks", []):
+            cb.setEnabled(enabled)
+
     def _selected_mti_field_methods(self):
         """Return selected mTI scalar field method values."""
         methods = [
@@ -1312,13 +1331,16 @@ class SimulatorTab(QtWidgets.QWidget):
             dimensions = self.dimensions_input.text() or "8,8"
             thickness = self.thickness_input.text() or "4"
             mti_field_methods = self._selected_mti_field_methods()
-            if not mti_field_methods:
+            has_mti_jobs = any(job[2] == "M" for job in raw_jobs)
+            if has_mti_jobs and not mti_field_methods:
                 QtWidgets.QMessageBox.warning(
                     self,
                     "Warning",
                     "Please select at least one mTI field method.",
                 )
                 return
+            if not mti_field_methods:
+                mti_field_methods = [MTIFieldMethod.RECURSIVE_TI.value]
 
             # Validate numeric inputs
             try:
@@ -1783,6 +1805,8 @@ class SimulatorTab(QtWidgets.QWidget):
         self.electrode_shape_ellipse.setEnabled(False)
         self.dimensions_input.setEnabled(False)
         self.thickness_input.setEnabled(False)
+        if hasattr(self, "mti_methods_label"):
+            self.mti_methods_label.setEnabled(False)
         for cb in getattr(self, "mti_method_checks", []):
             cb.setEnabled(False)
 
@@ -1804,8 +1828,7 @@ class SimulatorTab(QtWidgets.QWidget):
         self.electrode_shape_ellipse.setEnabled(True)
         self.dimensions_input.setEnabled(True)
         self.thickness_input.setEnabled(True)
-        for cb in getattr(self, "mti_method_checks", []):
-            cb.setEnabled(True)
+        self._update_mti_method_controls_state()
 
     def clear_console(self):
         """Clear the output console."""

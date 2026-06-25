@@ -257,6 +257,14 @@ class NiftiViewerTab(QtWidgets.QWidget):
         self.high_freq_chk.setChecked(False)
         sim_block_layout.addWidget(self.high_freq_chk, 4, 0, 1, 4)
 
+        self.white_fields_chk = QtWidgets.QCheckBox("Load White Matter Fields")
+        self.white_fields_chk.setChecked(False)
+        sim_block_layout.addWidget(self.white_fields_chk, 5, 0, 1, 4)
+
+        self.full_fields_chk = QtWidgets.QCheckBox("Load Whole-Head Fields")
+        self.full_fields_chk.setChecked(False)
+        sim_block_layout.addWidget(self.full_fields_chk, 6, 0, 1, 4)
+
         config_layout.addWidget(sim_block)
         main_layout.addWidget(self.config_section)
 
@@ -879,6 +887,43 @@ class NiftiViewerTab(QtWidgets.QWidget):
                 f"Added {added_count} subject-simulation pairs", "success"
             )
 
+    def _simulation_nifti_dirs(self, sim_dir):
+        """Return NIfTI directories for a simulation, preferring mTI before TI."""
+        if not sim_dir:
+            return []
+
+        candidates = []
+        mti_niftis = os.path.join(sim_dir, "mTI", "niftis")
+        ti_niftis = os.path.join(sim_dir, "TI", "niftis")
+        if os.path.isdir(mti_niftis):
+            candidates.append(mti_niftis)
+        elif os.path.isdir(ti_niftis):
+            candidates.append(ti_niftis)
+
+        # Support older/experimental mTI outputs that used metric-specific
+        # top-level mTI directories.
+        for mti_dir in sorted(glob.glob(os.path.join(sim_dir, "mTI*"))):
+            if not os.path.isdir(mti_dir):
+                continue
+            nested = os.path.join(mti_dir, "niftis")
+            candidates.append(nested if os.path.isdir(nested) else mti_dir)
+        candidates.append(os.path.join(sim_dir, "shared_fields", "niftis"))
+
+        dirs = []
+        for nifti_dir in candidates:
+            if os.path.isdir(nifti_dir) and nifti_dir not in dirs:
+                dirs.append(nifti_dir)
+        return dirs
+
+    def _include_simulation_nifti(self, basename):
+        """Whether a simulation field NIfTI should be loaded with current filters."""
+        lower = basename.lower()
+        if lower.startswith("grey_"):
+            return True
+        if lower.startswith("white_"):
+            return self.white_fields_chk.isChecked()
+        return self.full_fields_chk.isChecked()
+
     def load_group_data(self):
         """Load group visualization with multiple subject-simulation pairs."""
         self.console_widget.clear_console()
@@ -970,41 +1015,40 @@ class NiftiViewerTab(QtWidgets.QWidget):
                 )
                 continue
 
-            nifti_dir = next(
-                (
-                    d
-                    for d in [
-                        os.path.join(sim_dir, "mTI", "niftis"),
-                        os.path.join(sim_dir, "TI", "niftis"),
-                    ]
-                    if os.path.exists(d)
-                ),
-                None,
-            )
-            if not nifti_dir:
+            nifti_dirs = self._simulation_nifti_dirs(sim_dir)
+            if not nifti_dirs:
                 self.console_widget.update_console(
                     f"No NIfTI dir for sub-{subject_id}/{simulation_name}", "warning"
                 )
                 continue
 
-            for nifti_file in glob.glob(os.path.join(nifti_dir, "*.nii*")):
-                basename = os.path.basename(nifti_file)
+            for nifti_dir in nifti_dirs:
+                for nifti_file in glob.glob(os.path.join(nifti_dir, "*.nii*")):
+                    basename = os.path.basename(nifti_file)
 
-                if "_MNI" not in basename:
-                    continue
-                if (
-                    "TI_max" not in basename and "TI_Max" not in basename
-                ) or "TDCS" in basename:
-                    continue
-                if "grey_" not in basename:
-                    continue
+                    if "_MNI" not in basename:
+                        continue
+                    if (
+                        "TI_max" not in basename and "TI_Max" not in basename
+                    ) or "TDCS" in basename:
+                        continue
+                    if not self._include_simulation_nifti(basename):
+                        continue
 
-                file_specs.append(
-                    self._vis_options(nifti_file, opacity=adjusted_opacity)
-                )
-                self.console_widget.update_console(
-                    f"Loading: sub-{subject_id}/{simulation_name} - {basename}", "info"
-                )
+                    is_visible = basename.lower().startswith("grey_")
+                    file_specs.append(
+                        self._vis_options(
+                            nifti_file,
+                            opacity=adjusted_opacity,
+                            visible=int(self.visibility_chk.isChecked())
+                            if is_visible
+                            else 0,
+                        )
+                    )
+                    self.console_widget.update_console(
+                        f"Loading: sub-{subject_id}/{simulation_name} - {basename}",
+                        "info",
+                    )
 
         self.launch_freeview_with_files(file_specs)
 
@@ -1075,31 +1119,25 @@ class NiftiViewerTab(QtWidgets.QWidget):
 
         # Add simulation results — prefer mTI over TI
         sim_dir = os.path.join(simulations_dir, simulation_name)
-        nifti_dir = next(
-            (
-                d
-                for d in [
-                    os.path.join(sim_dir, "mTI", "niftis"),
-                    os.path.join(sim_dir, "TI", "niftis"),
-                ]
-                if os.path.exists(d)
-            ),
-            None,
-        )
+        nifti_dirs = self._simulation_nifti_dirs(sim_dir)
 
-        if nifti_dir:
-            for nifti_file in glob.glob(os.path.join(nifti_dir, "*.nii*")):
-                basename = os.path.basename(nifti_file)
+        if nifti_dirs:
+            for nifti_dir in nifti_dirs:
+                for nifti_file in glob.glob(os.path.join(nifti_dir, "*.nii*")):
+                    basename = os.path.basename(nifti_file)
 
-                if (
-                    "TI_max" not in basename and "TI_Max" not in basename
-                ) or "TDCS" in basename:
-                    continue
-                if is_mni_space != ("_MNI" in basename):
-                    continue
+                    if (
+                        "TI_max" not in basename and "TI_Max" not in basename
+                    ) or "TDCS" in basename:
+                        continue
+                    if is_mni_space != ("_MNI" in basename):
+                        continue
+                    if not self._include_simulation_nifti(basename):
+                        continue
 
-                vis = int(self.visibility_chk.isChecked()) if "grey_" in basename else 0
-                file_specs.append(self._vis_options(nifti_file, visible=vis))
+                    is_visible = basename.lower().startswith("grey_")
+                    vis = int(self.visibility_chk.isChecked()) if is_visible else 0
+                    file_specs.append(self._vis_options(nifti_file, visible=vis))
 
             # Load high frequency fields if requested
             if self.high_freq_chk.isChecked():

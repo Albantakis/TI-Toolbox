@@ -158,6 +158,7 @@ class MExSearchEngine(ExSearchEngine):
                 data[f"{self.roi_name}_TImean_ROI"],
                 data[f"{self.roi_name}_Focality"],
             )
+            self._log_progress_estimate(i, total, start_time)
 
         if results:
             elapsed = time.time() - start_time

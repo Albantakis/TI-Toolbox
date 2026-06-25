@@ -283,6 +283,7 @@ class ExSearchEngine:
                 f"TImean={data[f'{self.roi_name}_TImean_ROI']:.4f} "
                 f"Foc={data[f'{self.roi_name}_Focality']:.4f}"
             )
+            self._log_progress_estimate(i, total, start_time)
 
         if results:
             t = time.time() - start_time
@@ -294,6 +295,32 @@ class ExSearchEngine:
             self.logger.info(f"Output: {output_dir}")
 
         return results
+
+    def _log_progress_estimate(
+        self,
+        completed: int,
+        total: int,
+        start_time: float,
+        interval: int = 500,
+    ) -> None:
+        """Log a readable progress/ETA line at coarse intervals."""
+        if not total or completed <= 0:
+            return
+        if completed != total and completed % interval != 0:
+            return
+
+        elapsed = time.time() - start_time
+        rate = completed / elapsed if elapsed > 0 else 0.0
+        eta = (total - completed) / rate if rate > 0 else 0.0
+        self.logger.info(
+            "Progress estimate: %d/%d (%.1f%%) | elapsed %.1fmin | ETA %.1fmin | %.2f/s",
+            completed,
+            total,
+            100 * completed / total,
+            elapsed / 60,
+            eta / 60,
+            rate,
+        )
 
     def _log_config_summary(
         self,
