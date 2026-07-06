@@ -25,6 +25,7 @@ import signal
 import subprocess
 import threading
 import time
+from collections import deque
 from datetime import date
 from pathlib import Path
 from typing import Iterable, Sequence
@@ -32,6 +33,7 @@ from typing import Iterable, Sequence
 from tit.paths import get_path_manager
 
 DATASET_TEMPLATES = {
+    "root": "root.dataset_description.json",
     "freesurfer": "freesurfer.dataset_description.json",
     "simnibs": "simnibs.dataset_description.json",
     "ti-toolbox": "ti-toolbox.dataset_description.json",
@@ -216,13 +218,14 @@ def ensure_subject_dirs(project_dir: str, subject_id: str) -> None:
     for modality in ("T1w", "T2w"):
         pm.ensure(pm.sourcedata_dicom(subject_id, modality))
     pm.ensure(pm.bids_anat(subject_id))
-    pm.ensure(pm.freesurfer_subject(subject_id))
     pm.ensure(pm.sub(subject_id))
     pm.ensure(pm.ti_toolbox())
 
 
 def _dataset_description_target(project_dir: str, dataset: str) -> Path:
     """Return the target path for a dataset_description.json file."""
+    if dataset == "root":
+        return Path(project_dir) / "dataset_description.json"
     if dataset == "freesurfer":
         return (
             Path(project_dir)
@@ -280,6 +283,9 @@ def ensure_dataset_descriptions(project_dir: str, datasets: Iterable[str]) -> No
                 )
 
         payload = json.loads(target_path.read_text(encoding="utf-8"))
+
+        if not payload.get("Name"):
+            payload["Name"] = project_name
 
         uri_value = f"bids:{project_name}@{today}"
         source_datasets = payload.get("SourceDatasets")
@@ -360,6 +366,7 @@ class CommandRunner:
         self.stop_event = stop_event or threading.Event()
         self._lock = threading.Lock()
         self._processes: set[subprocess.Popen] = set()
+        self.last_output_lines: list[str] = []
 
     def request_stop(self) -> None:
         """Signal cancellation and terminate all running processes."""
@@ -413,6 +420,8 @@ class CommandRunner:
             raise ValueError("Command is empty.")
 
         logger.debug(f"Command: {' '.join(cmd)}")
+        output_tail: deque[str] = deque(maxlen=20)
+        self.last_output_lines = []
 
         preexec_fn = os.setsid if os.name != "nt" else None
         proc = subprocess.Popen(
@@ -437,9 +446,11 @@ class CommandRunner:
                         raise PreprocessCancelled("Pre-processing cancelled.")
                     line = line.strip()
                     if line:
+                        output_tail.append(line)
                         logger.info(line)
             returncode = proc.wait()
         finally:
+            self.last_output_lines = list(output_tail)
             with self._lock:
                 self._processes.discard(proc)
 

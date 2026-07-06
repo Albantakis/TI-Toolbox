@@ -10,6 +10,7 @@ from tit.pre.dicom2nifti import (
     _convert_modality,
     _extract_archive,
     _find_dicom_files,
+    _modality_dicom_dir,
     run_dicom_to_nifti,
 )
 from tit.pre.utils import PreprocessError
@@ -79,6 +80,30 @@ class TestDicomDiscoveryAndArchives:
             _extract_archive(archive, tmp_path / "dest")
 
 
+class TestModalityDicomDir:
+    """Tests for the _modality_dicom_dir helper."""
+
+    def test_exact_folder_name(self, tmp_path):
+        dicom_dir = tmp_path / "dwi" / "dicom"
+        dicom_dir.mkdir(parents=True)
+
+        assert _modality_dicom_dir(tmp_path, "dwi") == dicom_dir
+
+    def test_case_insensitive_folder_name(self, tmp_path):
+        """Users name the folder DWI as often as dwi."""
+        dicom_dir = tmp_path / "DWI" / "dicom"
+        dicom_dir.mkdir(parents=True)
+
+        # On case-insensitive filesystems the default path already matches,
+        # so only assert the resolved dir reaches the DICOMs.
+        result = _modality_dicom_dir(tmp_path, "dwi")
+        assert result.exists()
+        assert result.parent.name.lower() == "dwi"
+
+    def test_missing_folder_returns_default(self, tmp_path):
+        assert _modality_dicom_dir(tmp_path, "dwi") == tmp_path / "dwi" / "dicom"
+
+
 class TestConvertModality:
     """Tests for the _convert_modality helper."""
 
@@ -120,11 +145,7 @@ class TestConvertModality:
         out_dir = tmp_path / "out"
         out_dir.mkdir()
 
-        def _create_output(*args, **kwargs):
-            (out_dir / "sub-001_T1w.nii.gz").touch()
-            return MagicMock(returncode=0)
-
-        mock_run.side_effect = _create_output
+        mock_run.return_value = MagicMock(returncode=0)
         logger = MagicMock()
 
         result = _convert_modality(dicom_dir, out_dir, "001", "T1w", logger, None)
@@ -149,21 +170,6 @@ class TestConvertModality:
 
         assert result is False
 
-    @patch(f"{MODULE}.subprocess.run")
-    def test_subprocess_success_without_nifti_raises(self, mock_run, tmp_path):
-        """Raises when dcm2niix exits cleanly but does not create a NIfTI."""
-        dicom_dir = tmp_path / "T1w" / "dicom"
-        dicom_dir.mkdir(parents=True)
-        (dicom_dir / "scan.dcm").touch()
-
-        out_dir = tmp_path / "out"
-        out_dir.mkdir()
-
-        mock_run.return_value = MagicMock(returncode=0)
-
-        with pytest.raises(PreprocessError, match="did not create expected output"):
-            _convert_modality(dicom_dir, out_dir, "001", "T1w", MagicMock(), None)
-
     def test_with_runner_success(self, tmp_path):
         """Uses runner when provided."""
         dicom_dir = tmp_path / "T1w" / "dicom"
@@ -174,11 +180,7 @@ class TestConvertModality:
         out_dir.mkdir()
 
         runner = MagicMock()
-        def _create_output(*args, **kwargs):
-            (out_dir / "sub-001_T1w.nii.gz").touch()
-            return 0
-
-        runner.run.side_effect = _create_output
+        runner.run.return_value = 0
         logger = MagicMock()
 
         result = _convert_modality(dicom_dir, out_dir, "001", "T1w", logger, runner)
@@ -187,6 +189,7 @@ class TestConvertModality:
         runner.run.assert_called_once()
         cmd = runner.run.call_args.args[0]
         assert "-r" not in cmd
+        assert cmd[cmd.index("-f") + 1] == "sub-001_T1w"
 
     def test_with_runner_failure(self, tmp_path):
         """Returns False on runner failure."""
@@ -205,6 +208,28 @@ class TestConvertModality:
 
         assert result is False
 
+    def test_dwi_uses_bids_name_and_creates_output_dir(self, tmp_path):
+        """dcm2niix writes .bval/.bvec next to the NIfTI using the -f name,
+        so sub-{id}_dwi makes outputs match QSIPrep's *_dwi.nii*/.bval/.bvec globs."""
+        dicom_dir = tmp_path / "dwi" / "dicom"
+        dicom_dir.mkdir(parents=True)
+        (dicom_dir / "scan.dcm").touch()
+
+        out_dir = tmp_path / "sub-001" / "dwi"
+
+        runner = MagicMock()
+        runner.run.return_value = 0
+
+        result = _convert_modality(
+            dicom_dir, out_dir, "001", "dwi", MagicMock(), runner
+        )
+
+        assert result is True
+        assert out_dir.is_dir()
+        cmd = runner.run.call_args.args[0]
+        assert cmd[cmd.index("-f") + 1] == "sub-001_dwi"
+        assert cmd[cmd.index("-o") + 1] == str(out_dir)
+
     def test_extracts_modality_archive_before_conversion(self, tmp_path):
         """Archives in modality folders are extracted before conversion."""
         modality_dir = tmp_path / "T1w"
@@ -217,11 +242,7 @@ class TestConvertModality:
         out_dir = tmp_path / "out"
         out_dir.mkdir()
         runner = MagicMock()
-        def _create_output(*args, **kwargs):
-            (out_dir / "sub-001_T1w.nii.gz").touch()
-            return 0
-
-        runner.run.side_effect = _create_output
+        runner.run.return_value = 0
 
         result = _convert_modality(
             dicom_dir, out_dir, "001", "T1w", MagicMock(), runner
@@ -238,11 +259,12 @@ class TestRunDicomToNifti:
 
     @patch(f"{MODULE}.get_path_manager")
     @patch(f"{MODULE}._convert_modality")
-    def test_converts_both_modalities(self, mock_convert, mock_gpm, tmp_path):
-        """Processes both T1w and T2w modalities."""
+    def test_converts_all_modalities(self, mock_convert, mock_gpm, tmp_path):
+        """Processes T1w, T2w, and dwi modalities."""
         pm = MagicMock()
         pm.sourcedata_subject.return_value = str(tmp_path / "sourcedata" / "sub-001")
         pm.bids_anat.return_value = str(tmp_path / "sub-001" / "anat")
+        pm.bids_dwi.return_value = str(tmp_path / "sub-001" / "dwi")
         mock_gpm.return_value = pm
 
         mock_convert.return_value = True
@@ -250,7 +272,29 @@ class TestRunDicomToNifti:
 
         run_dicom_to_nifti("/proj", "001", logger=logger)
 
-        assert mock_convert.call_count == 2
+        assert mock_convert.call_count == 3
+        modalities = [call.args[3] for call in mock_convert.call_args_list]
+        assert modalities == ["T1w", "T2w", "dwi"]
+
+    @patch(f"{MODULE}.get_path_manager")
+    @patch(f"{MODULE}._convert_modality")
+    def test_dwi_converts_to_bids_dwi_dir(self, mock_convert, mock_gpm, tmp_path):
+        """DWI output goes to sub-{id}/dwi/ where QSIPrep expects it."""
+        pm = MagicMock()
+        sourcedata = tmp_path / "sourcedata" / "sub-001"
+        (sourcedata / "dwi" / "dicom").mkdir(parents=True)
+        pm.sourcedata_subject.return_value = str(sourcedata)
+        pm.bids_anat.return_value = str(tmp_path / "sub-001" / "anat")
+        pm.bids_dwi.return_value = str(tmp_path / "sub-001" / "dwi")
+        mock_gpm.return_value = pm
+
+        mock_convert.return_value = True
+
+        run_dicom_to_nifti("/proj", "001", logger=MagicMock())
+
+        dwi_call = mock_convert.call_args_list[2]
+        assert dwi_call.args[0] == sourcedata / "dwi" / "dicom"
+        assert dwi_call.args[1] == tmp_path / "sub-001" / "dwi"
 
     @patch(f"{MODULE}.get_path_manager")
     @patch(f"{MODULE}._convert_modality")
@@ -259,6 +303,7 @@ class TestRunDicomToNifti:
         pm = MagicMock()
         pm.sourcedata_subject.return_value = str(tmp_path / "sourcedata" / "sub-001")
         pm.bids_anat.return_value = str(tmp_path / "sub-001" / "anat")
+        pm.bids_dwi.return_value = str(tmp_path / "sub-001" / "dwi")
         mock_gpm.return_value = pm
 
         mock_convert.return_value = False

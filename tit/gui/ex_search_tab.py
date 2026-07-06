@@ -1505,7 +1505,9 @@ class ExSearchTab(QtWidgets.QWidget):
                 self.leadfield_list.addItem(item)
 
             if not leadfields:
-                no_leadfields_item = QtWidgets.QListWidgetItem("No leadfields found")
+                no_leadfields_item = QtWidgets.QListWidgetItem(
+                    "No leadfields found - click Create New to generate one"
+                )
                 no_leadfields_item.setFlags(
                     QtCore.Qt.NoItemFlags
                 )  # Make it non-selectable
@@ -2034,11 +2036,12 @@ class ExSearchTab(QtWidgets.QWidget):
         )
 
     @staticmethod
-    def _write_ex_config(config):
+    def _write_ex_config(config, project_dir):
         """Serialize an ExConfig to a temporary JSON file.
 
         Args:
             config: ExConfig dataclass instance.
+            project_dir: Project root path required by the CLI entry point.
 
         Returns:
             Path to the written JSON config file.
@@ -2185,7 +2188,7 @@ class ExSearchTab(QtWidgets.QWidget):
             self.update_output("Step 1: Running exhaustive search...")
 
         # Serialize config to JSON and build command
-        config_path = self._write_ex_config(ex_config)
+        config_path = self._write_ex_config(ex_config, project_dir)
         cmd = ["simnibs_python", "-m", "tit.opt.ex", config_path]
 
         if self.debug_mode:

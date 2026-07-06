@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 
 from tit import constants as const
+from tit.paths import get_path_manager
 from tit.pre.utils import CommandRunner, PreprocessError
 
 from .config import QSIPrepConfig, ResourceConfig
@@ -23,6 +24,17 @@ from .utils import (
     validate_bids_dwi,
     validate_qsiprep_output,
 )
+
+
+def _format_qsiprep_failure(returncode: int, runner: CommandRunner) -> str:
+    lines = getattr(runner, "last_output_lines", []) or []
+    if not lines:
+        return (
+            f"QSIPrep failed with exit code {returncode}. "
+            "No container output was captured; check the preprocessing log for details."
+        )
+    tail = " | ".join(lines[-5:])
+    return f"QSIPrep failed with exit code {returncode}. Last output: {tail}"
 
 
 def run_qsiprep(
@@ -92,26 +104,19 @@ def run_qsiprep(
         if not is_valid:
             raise PreprocessError(f"DWI validation failed: {error_msg}")
 
-        # Check for existing output
-        output_dir = Path(project_dir) / "derivatives" / "qsiprep" / f"sub-{subject_id}"
-
-        if output_dir.exists():
-            existing_valid, existing_error = validate_qsiprep_output(
-                project_dir, subject_id
+        pm = get_path_manager(project_dir)
+        output_dir = Path(pm.qsiprep_subject(subject_id))
+        # Docker `-v` can leave an empty directory behind; only a non-empty
+        # one is a real output.
+        if output_dir.exists() and any(output_dir.iterdir()):
+            raise PreprocessError(
+                f"QSIPrep output already exists at {output_dir}. "
+                "Remove the directory manually before rerunning."
             )
-            reason = "complete" if existing_valid else f"incomplete ({existing_error})"
-            logger.warning(
-                "QSIPrep output already exists at %s and is %s. "
-                "Skipping this subject. To rerun QSIPrep, remove the existing "
-                "output directory first.",
-                output_dir,
-                reason,
-            )
-            return
 
         # Create output directories
         output_dir.parent.mkdir(parents=True, exist_ok=True)
-        work_dir = Path(project_dir) / "derivatives" / ".qsiprep_work"
+        work_dir = Path(pm.derivatives()) / ".qsiprep_work"
         work_dir.mkdir(parents=True, exist_ok=True)
 
         # Build configuration
@@ -153,7 +158,7 @@ def run_qsiprep(
         returncode = runner.run(cmd, logger=logger)
 
         if returncode != 0:
-            raise PreprocessError(f"QSIPrep failed with exit code {returncode}")
+            raise PreprocessError(_format_qsiprep_failure(returncode, runner))
 
         # Validate output
         is_valid, error_msg = validate_qsiprep_output(project_dir, subject_id)

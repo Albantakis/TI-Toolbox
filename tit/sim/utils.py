@@ -51,6 +51,7 @@ from tit.paths import get_path_manager
 from tit import constants as const
 from tit.sim.config import (
     Montage,
+    parse_intensities,
     SimulationConfig,
     SimulationMode,
 )
@@ -472,6 +473,7 @@ def run_montage_visualization(
     if is_skipped_net(eeg_net):
         logger.warning(
             "Montage visualization unavailable for EEG net '%s'; skipping render. "
+            "This net does not currently have a supported 2-D montage template. "
             "Expected output would be %s in %s.",
             eeg_net,
             expected,
@@ -774,6 +776,29 @@ def safe_move(src: str, dest: str) -> None:
 
 
 # ── Simulation Orchestration ────────────────────────────────────────────────────────────────
+
+
+def build_simulation_config_for_job(
+    subject_id: str,
+    montage: Montage,
+    current_str: str,
+    conductivity: str,
+    electrode_shape: str,
+    electrode_dimensions: list[float],
+    gel_thickness: float,
+    mti_field_methods: list[str] | None = None,
+) -> SimulationConfig:
+    """Build the backend config for one subject/montage job."""
+    return SimulationConfig(
+        subject_id=subject_id,
+        montages=[montage],
+        conductivity=conductivity,
+        intensities=parse_intensities(current_str),
+        mti_field_methods=mti_field_methods or ["recursive_ti"],
+        electrode_shape=electrode_shape,
+        electrode_dimensions=electrode_dimensions,
+        gel_thickness=gel_thickness,
+    )
 
 
 def run_simulation(
