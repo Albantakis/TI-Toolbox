@@ -72,13 +72,24 @@ def normalize_buckets(raw: dict) -> dict[str, list[str]]:
     return buckets
 
 
+def _bucket_json_payload(data: dict) -> dict:
+    """Return the bucket-shaped payload from a bucket file or full config."""
+    electrodes = data.get("electrodes")
+    if isinstance(electrodes, dict):
+        nested = dict(electrodes)
+        nested.pop("_type", None)
+        return nested
+    return data
+
+
 def load_bucket_file(path: str | Path) -> dict[str, list[str]]:
     """Load bucket definitions from JSON, CSV, or TSV.
 
     JSON may use canonical keys (``e1_plus``) or GUI-style keys
-    (``E1+``). CSV/TSV files should have one row per bucket, with the
-    bucket name in the first column and electrodes in the remaining columns
-    or as a comma/semicolon separated second column.
+    (``E1+``). Full ex-search config JSON files with nested ``electrodes``
+    are also accepted. CSV/TSV files should have one row per bucket, with
+    the bucket name in the first column and electrodes in the remaining
+    columns or as a comma/semicolon separated second column.
     """
     path = Path(path)
     suffix = path.suffix.lower()
@@ -87,7 +98,7 @@ def load_bucket_file(path: str | Path) -> dict[str, list[str]]:
             data = json.load(f)
         if not isinstance(data, dict):
             raise ValueError("Bucket JSON must contain an object")
-        return normalize_buckets(data)
+        return normalize_buckets(_bucket_json_payload(data))
 
     delimiter = "\t" if suffix == ".tsv" else ","
     rows = {}

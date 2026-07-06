@@ -52,6 +52,33 @@ class TestBucketFiles:
         assert buckets["e1_plus"] == ["LA1", "LA2"]
         assert buckets["e2_minus"] == ["RP1", "RP2"]
 
+    def test_loads_nested_electrodes_from_ex_search_config(self, tmp_path):
+        path = tmp_path / "ex_search_config.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "subject_id": "DS",
+                    "electrodes": {
+                        "_type": "BucketElectrodes",
+                        "e1_plus": ["E056"],
+                        "e1_minus": ["E212"],
+                        "e2_plus": ["E074"],
+                        "e2_minus": ["E192"],
+                    },
+                    "symmetric_bucket": True,
+                }
+            )
+        )
+
+        buckets = load_bucket_file(path)
+
+        assert buckets == {
+            "e1_plus": ["E056"],
+            "e1_minus": ["E212"],
+            "e2_plus": ["E074"],
+            "e2_minus": ["E192"],
+        }
+
     def test_loads_csv_bucket_file(self, tmp_path):
         path = tmp_path / "buckets.csv"
         path.write_text(
