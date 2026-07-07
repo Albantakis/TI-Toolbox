@@ -29,7 +29,7 @@ STEP_LABELS = {
     STEP_QSIPREP: "QSIPrep",
     STEP_QSIRECON: "QSIRecon",
     STEP_DTI: "DTI tensor extraction",
-    STEP_THALAMUS_ROIS: "Functional thalamus ROIs",
+    STEP_THALAMUS_ROIS: "Subject-space ROIs",
 }
 
 
@@ -275,12 +275,7 @@ def existing_outputs_for_step(
             Path(pm.m2m(subject_id)) / const.FILE_DTI_TENSOR,
         )
     if step == STEP_THALAMUS_ROIS:
-        return _single_path_output(
-            project_dir,
-            subject_id,
-            step,
-            Path(pm.rois(subject_id)) / "thalamus_functional",
-        )
+        return []
     raise ValueError(f"Unknown preprocessing step: {step}")
 
 

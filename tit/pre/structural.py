@@ -25,7 +25,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from tit import constants as const
 from tit.paths import get_path_manager
-from tit.tools.thalamus_rois import create_thalamus_functional_rois
+from tit.tools.subject_rois import create_subject_space_rois
 
 from .charm import run_charm, run_subject_atlas
 from .dicom2nifti import run_dicom_to_nifti
@@ -363,9 +363,9 @@ def _run_subject_pipeline(
             skip_existing_outputs=skip_existing_outputs,
             replace_existing_outputs=replace_existing_outputs,
         ):
-            durations["Functional Thalamus ROIs"] = _run_step(
-                "Functional thalamus ROI generation",
-                lambda: create_thalamus_functional_rois(
+            durations["Subject-space ROIs"] = _run_step(
+                "Subject-space ROI generation",
+                lambda: create_subject_space_rois(
                     project_dir,
                     subject_id,
                     overwrite=True,
@@ -373,7 +373,7 @@ def _run_subject_pipeline(
                 logger,
             )
         else:
-            durations["Functional Thalamus ROIs"] = None
+            durations["Subject-space ROIs"] = None
 
     logger.info(f"Pre-processing completed successfully for subject: {subject_id}")
     return durations
@@ -438,8 +438,7 @@ def run_pipeline(
     run_subcortical_segmentations : bool, optional
         Run thalamic-nuclei and hippocampal-subfield segmentations.
     run_thalamus_rois : bool, optional
-        Create anterior/central/posterior functional thalamus ROI masks in
-        subject space from shared MNI templates.
+        Warp project-local MNI ROI masks into subject space.
     skip_existing_outputs : bool, optional
         Skip selected preprocessing steps when their output already exists.
     replace_existing_outputs : bool, optional
@@ -735,10 +734,10 @@ def _run_pipeline_inner(
 
         if run_thalamus_rois:
             report_gen.add_processing_step(
-                step_name="Functional Thalamus ROIs",
-                description="Create subject-space anterior/central/posterior thalamus ROI masks",
-                status=_report_status(durations, "Functional Thalamus ROIs"),
-                duration=durations.get("Functional Thalamus ROIs"),
+                step_name="Subject-space ROIs",
+                description="Warp project-local MNI ROI masks into subject space",
+                status=_report_status(durations, "Subject-space ROIs"),
+                duration=durations.get("Subject-space ROIs"),
             )
 
         report_gen.scan_for_data()

@@ -31,6 +31,10 @@ from tit.pre import (
     find_existing_preprocessing_outputs,
     find_missing_preprocessing_inputs,
 )
+from tit.tools.subject_rois import (
+    discover_mni_roi_templates,
+    project_roi_template_dir,
+)
 from tit.gui.style import FONT_SM, FONT_HELP, FONT_SUBHEADING
 from tit.gui.components.qsi_config_dialogs import (
     QSIPrepConfigDialog,
@@ -84,6 +88,8 @@ class PreProcessTab(QtWidgets.QWidget):
         self._summary_started = False
         self._summary_finished = False
         self._last_plain_output_line = None
+        self._roi_templates_available = False
+        self._roi_template_dir = None
         self.setup_ui()
 
     def setup_ui(self):
@@ -230,13 +236,13 @@ class PreProcessTab(QtWidgets.QWidget):
         )
         options_group_layout.addWidget(self.run_tissue_analyzer_cb)
 
-        # Subject-space thalamus ROI masks for optimizer/analyzer workflows.
+        # Subject-space ROI masks for optimizer/analyzer workflows.
         self.create_thalamus_rois_cb = QtWidgets.QCheckBox(
-            "Create functional thalamus ROIs"
+            "Create subject-space ROIs from MNI masks"
         )
         self.create_thalamus_rois_cb.setChecked(False)
         self.create_thalamus_rois_cb.setToolTip(
-            "Warp shared MNI anterior/central/posterior thalamus masks into each subject's m2m space"
+            "Warp local MNI ROI masks into each subject's m2m space"
         )
         options_group_layout.addWidget(self.create_thalamus_rois_cb)
 
@@ -361,8 +367,47 @@ class PreProcessTab(QtWidgets.QWidget):
         """
         return self.pm.project_dir
 
+    def _project_roi_template_dir(self):
+        """Return the project-local MNI ROI template path."""
+        if self.project_dir is None:
+            return os.path.join(
+                "<project>",
+                "derivatives",
+                "ti-toolbox",
+                "rois",
+            )
+        return str(project_roi_template_dir(self.project_dir))
+
+    def _refresh_roi_template_state(self):
+        """Enable subject-space ROI generation only when local MNI masks exist."""
+        template_dir = self._project_roi_template_dir()
+        templates = (
+            discover_mni_roi_templates(self.project_dir)
+            if self.project_dir is not None
+            else ()
+        )
+
+        self._roi_templates_available = bool(templates)
+        self._roi_template_dir = template_dir if templates else None
+
+        if templates:
+            self.create_thalamus_rois_cb.setToolTip(
+                "Warp local MNI ROI masks into each subject's m2m space.\n"
+                f"Found {len(templates)} template(s) in: {template_dir}"
+            )
+            self.create_thalamus_rois_cb.setEnabled(not self.processing_running)
+            return
+
+        self.create_thalamus_rois_cb.setChecked(False)
+        self.create_thalamus_rois_cb.setEnabled(False)
+        self.create_thalamus_rois_cb.setToolTip(
+            "Optional subject-space ROI generation is unavailable.\n"
+            f"Place one or more MNI ROI masks (.nii or .nii.gz) in:\n{template_dir}"
+        )
+
     def update_available_subjects(self):
         """Update the list of available subjects."""
+        self._refresh_roi_template_state()
         self.subject_list.clear()
         if self.project_dir is None:
             QtWidgets.QMessageBox.warning(
@@ -403,7 +448,10 @@ class PreProcessTab(QtWidgets.QWidget):
         self.parallel_cb.setEnabled(not is_processing and self.run_recon_cb.isChecked())
         self.create_m2m_cb.setEnabled(not is_processing)
         self.run_tissue_analyzer_cb.setEnabled(not is_processing)
-        self.create_thalamus_rois_cb.setEnabled(not is_processing)
+        if not is_processing:
+            self._refresh_roi_template_state()
+        else:
+            self.create_thalamus_rois_cb.setEnabled(False)
 
         # QSI options
         self.run_qsiprep_cb.setEnabled(not is_processing)
@@ -542,6 +590,17 @@ class PreProcessTab(QtWidgets.QWidget):
             )
             return
 
+        subject_rois_requested = self.create_thalamus_rois_cb.isChecked()
+        self._refresh_roi_template_state()
+        if subject_rois_requested and not self._roi_templates_available:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Missing MNI ROI Templates",
+                "Subject-space ROI generation requires local MNI ROI masks.\n\n"
+                f"Place one or more .nii or .nii.gz masks in:\n{self._project_roi_template_dir()}",
+            )
+            return
+
         # Validate options
         if self.parallel_cb.isChecked() and not self.run_recon_cb.isChecked():
             QtWidgets.QMessageBox.warning(
@@ -576,7 +635,7 @@ class PreProcessTab(QtWidgets.QWidget):
                 )
                 return
 
-        # Functional thalamus ROIs need an existing or newly-created m2m folder.
+        # Subject-space ROIs need an existing or newly-created m2m folder.
         if (
             self.create_thalamus_rois_cb.isChecked()
             and not self.create_m2m_cb.isChecked()
@@ -591,12 +650,12 @@ class PreProcessTab(QtWidgets.QWidget):
                 QtWidgets.QMessageBox.warning(
                     self,
                     "Missing m2m Folders",
-                    f"Functional thalamus ROIs require m2m folders, but the following subjects don't have them:\n"
+                    f"Subject-space ROIs require m2m folders, but the following subjects don't have them:\n"
                     f"{', '.join(missing_m2m_subjects)}\n\n"
                     f"Please either:\n"
                     f"1. Enable 'Create SimNIBS m2m folder' option, or\n"
                     f"2. Run m2m creation for these subjects first, or\n"
-                    f"3. Disable 'Create functional thalamus ROIs'",
+                    f"3. Disable 'Create subject-space ROIs from MNI masks'",
                 )
                 return
 
@@ -635,7 +694,7 @@ class PreProcessTab(QtWidgets.QWidget):
             + f"- Run recon-all: {'Yes' if self.run_recon_cb.isChecked() else 'No'}\n"
             + f"- Parallel processing: {parallel_text}\n"
             + f"- Run tissue analyzer: {'Yes' if self.run_tissue_analyzer_cb.isChecked() else 'No'}\n"
-            + f"- Create functional thalamus ROIs: {'Yes' if self.create_thalamus_rois_cb.isChecked() else 'No'}\n"
+            + f"- Create subject-space ROIs: {'Yes' if self.create_thalamus_rois_cb.isChecked() else 'No'}\n"
             + f"- Run QSIPrep: {'Yes' if self.run_qsiprep_cb.isChecked() else 'No'}\n"
             + f"- Run QSIRecon: {'Yes' if self.run_qsirecon_cb.isChecked() else 'No'}\n"
             + f"- Extract DTI tensor: {'Yes' if self.extract_dti_cb.isChecked() else 'No'}\n"
@@ -675,7 +734,7 @@ class PreProcessTab(QtWidgets.QWidget):
             f"- Run tissue analyzer: {self.run_tissue_analyzer_cb.isChecked()}", "debug"
         )
         self.update_output(
-            f"- Create thalamus ROIs: {self.create_thalamus_rois_cb.isChecked()}",
+            f"- Create subject-space ROIs: {self.create_thalamus_rois_cb.isChecked()}",
             "debug",
         )
         self.update_output(f"- Run QSIPrep: {self.run_qsiprep_cb.isChecked()}", "debug")

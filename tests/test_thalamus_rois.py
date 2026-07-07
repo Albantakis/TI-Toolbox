@@ -129,7 +129,7 @@ def test_create_thalamus_functional_rois_requires_templates(tmp_path):
         )
 
 
-def test_preflight_tracks_functional_thalamus_roi_outputs(tmp_path):
+def test_preflight_selects_subject_roi_step_without_deleting_roi_folder(tmp_path):
     from tit.pre.preflight import (
         STEP_THALAMUS_ROIS,
         existing_outputs_for_step,
@@ -150,5 +150,4 @@ def test_preflight_tracks_functional_thalamus_roi_outputs(tmp_path):
 
     assert STEP_THALAMUS_ROIS in selected_preprocessing_steps(run_thalamus_rois=True)
     outputs = existing_outputs_for_step(str(project), "001", STEP_THALAMUS_ROIS)
-    assert len(outputs) == 1
-    assert outputs[0].path == roi_dir
+    assert outputs == []
