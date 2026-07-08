@@ -687,6 +687,7 @@ class SimulatorTab(QtWidgets.QWidget):
                 if i == self._selected_card_idx:
                     self._refresh_selection_list()
                 break
+        self._update_mti_method_controls_state()
 
     def _update_count_cell(self, row):
         """Update the count label on the job card for a given index."""
