@@ -86,6 +86,7 @@ def _run_single(data: dict) -> None:
         simulation=data["simulation"],
         space=data.get("space", "mesh"),
         tissue_type=data.get("tissue_type", "GM"),
+        measure=data.get("measure"),
         output_dir=data.get("output_dir"),
     )
 

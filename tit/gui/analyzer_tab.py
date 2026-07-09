@@ -34,7 +34,18 @@ from tit.gui.components.console import (
 from tit.gui.components.action_buttons import RunStopButtons
 from tit.gui.components.base_thread import BaseProcessThread
 from tit.atlas.constants import BUILTIN_ATLASES
+from tit.analyzer.field_selector import list_field_targets
 from tit.paths import get_path_manager
+
+
+MTI_MEASURE_LABELS = {
+    "recursive_ti": "Recursive TI",
+    "botzanowski_magnitude_am": "Botzanowski magnitude AM",
+    "botzanowski_directional_am": "Botzanowski directional AM",
+    "botzanowski_directional_am_ti_avg": "Botzanowski directional AM avg",
+    "grossman_ext_directional_am": "Grossman ext directional AM",
+    "grossman_ext_directional_am_ti_avg": "Grossman ext directional AM avg",
+}
 
 
 class AnalysisThread(BaseProcessThread):
@@ -96,6 +107,81 @@ class AnalyzerTab(QtWidgets.QWidget):
             self.update_group_atlas_options()
         self.update_atlas_visibility()
         self.update_gmsh_subjects()
+        self.update_mti_measure_combo()
+
+    def _selected_mti_measure(self):
+        if (
+            not hasattr(self, "mti_measure_combo")
+            or not self.mti_measure_combo.isVisible()
+            or not self.mti_measure_combo.isEnabled()
+        ):
+            return None
+        return self.mti_measure_combo.currentData()
+
+    def _mti_measure_label(self, measure):
+        return MTI_MEASURE_LABELS.get(measure, measure.replace("_", " ").title())
+
+    def _restore_combo_selection(self, combo, previous_text=None, previous_data=None):
+        """Restore a combo-box selection after its items have been rebuilt."""
+        if previous_data is not None:
+            index = combo.findData(previous_data)
+            if index >= 0:
+                combo.setCurrentIndex(index)
+                return True
+        if previous_text:
+            index = combo.findText(previous_text)
+            if index >= 0:
+                combo.setCurrentIndex(index)
+                return True
+        return False
+
+    def update_mti_measure_combo(self):
+        """Populate the mTI measure selector for single multipolar analyses."""
+        if not hasattr(self, "mti_measure_combo"):
+            return
+
+        current_measure = self.mti_measure_combo.currentData()
+        self.mti_measure_combo.blockSignals(True)
+        self.mti_measure_combo.clear()
+
+        targets = []
+        if self.pairs_table.rowCount() == 1:
+            subject_combo = self.pairs_table.cellWidget(0, 0)
+            sim_combo = self.pairs_table.cellWidget(0, 1)
+            subject_id = subject_combo.currentText() if subject_combo else ""
+            simulation_name = sim_combo.currentText() if sim_combo else ""
+            if subject_id and simulation_name and simulation_name != "Select montage...":
+                space = "mesh" if self.space_mesh.isChecked() else "voxel"
+                tissue = self.tissue_combo.currentData() or "GM"
+                try:
+                    targets = list_field_targets(
+                        subject_id,
+                        simulation_name,
+                        space,
+                        tissue_type=tissue,
+                    )
+                except (OSError, ValueError, FileNotFoundError):
+                    targets = []
+
+        mti_targets = [
+            target for target in targets if target.measure and target.measure != "TI"
+        ]
+        for target in mti_targets:
+            self.mti_measure_combo.addItem(
+                self._mti_measure_label(target.measure),
+                target.measure,
+            )
+
+        if current_measure:
+            index = self.mti_measure_combo.findData(current_measure)
+            if index >= 0:
+                self.mti_measure_combo.setCurrentIndex(index)
+
+        enabled = bool(mti_targets)
+        self.mti_measure_label.setVisible(enabled)
+        self.mti_measure_combo.setVisible(enabled)
+        self.mti_measure_combo.setEnabled(enabled)
+        self.mti_measure_combo.blockSignals(False)
 
     def __init__(self, parent=None):
         super(AnalyzerTab, self).__init__(parent)
@@ -394,6 +480,7 @@ class AnalyzerTab(QtWidgets.QWidget):
         if subjects:
             sims = self.pm.list_simulations(subjects[0])
             sim_combo.addItems(sims)
+        sim_combo.currentTextChanged.connect(lambda: self.on_pairs_changed())
         self.pairs_table.setCellWidget(row, 1, sim_combo)
 
         # Remove button
@@ -416,6 +503,7 @@ class AnalyzerTab(QtWidgets.QWidget):
                 sims = self.pm.list_simulations(subject_id)
                 sim_combo.clear()
                 sim_combo.addItems(sims)
+        self.on_pairs_changed()
 
     def remove_pair(self, row):
         """Remove a subject-simulation pair row."""
@@ -552,6 +640,9 @@ class AnalyzerTab(QtWidgets.QWidget):
                 )
                 sim_combo_widget.addItems(available_sims)
                 sim_combo_widget.setCurrentText(selected_simulation)
+                sim_combo_widget.currentTextChanged.connect(
+                    lambda: self.on_pairs_changed()
+                )
                 self.pairs_table.setCellWidget(row, 1, sim_combo_widget)
 
                 # Remove button
@@ -610,6 +701,24 @@ class AnalyzerTab(QtWidgets.QWidget):
         tissue_layout.addWidget(self.tissue_combo)
         tissue_layout.addStretch()
         analysis_params_layout.addLayout(tissue_layout)
+
+        # mTI measure row (shown only when the selected simulation has mTI outputs)
+        mti_measure_layout = QtWidgets.QHBoxLayout()
+        mti_measure_layout.setSpacing(10)
+        self.mti_measure_label = QtWidgets.QLabel("mTI Measure:")
+        self.mti_measure_label.setSizePolicy(
+            QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed
+        )
+        self.mti_measure_combo = QtWidgets.QComboBox()
+        self.mti_measure_combo.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed
+        )
+        mti_measure_layout.addWidget(self.mti_measure_label)
+        mti_measure_layout.addWidget(self.mti_measure_combo)
+        mti_measure_layout.addStretch()
+        analysis_params_layout.addLayout(mti_measure_layout)
+        self.mti_measure_label.hide()
+        self.mti_measure_combo.hide()
 
         # Type selection row (separate from Space) - distribute evenly across width
         type_layout = QtWidgets.QHBoxLayout()
@@ -770,6 +879,9 @@ class AnalyzerTab(QtWidgets.QWidget):
         # Original connections from setup_ui for space/type changes
         self.space_mesh.toggled.connect(self.update_atlas_visibility)
         self.space_voxel.toggled.connect(self.update_atlas_visibility)
+        self.space_mesh.toggled.connect(self.update_mti_measure_combo)
+        self.space_voxel.toggled.connect(self.update_mti_measure_combo)
+        self.tissue_combo.currentTextChanged.connect(self.update_mti_measure_combo)
         self.type_spherical.toggled.connect(self.update_atlas_visibility)
         self.type_cortical.toggled.connect(self.update_atlas_visibility)
 
@@ -785,7 +897,7 @@ class AnalyzerTab(QtWidgets.QWidget):
 
         self.update_atlas_visibility()  # Initial call
         self.update_cortical_button_text()  # Initial call
-        analysis_params_container.setFixedHeight(250)
+        analysis_params_container.setFixedHeight(280)
         right_layout.addWidget(analysis_params_container)
 
         # Compact Gmsh visualization - using space more efficiently
@@ -897,6 +1009,9 @@ class AnalyzerTab(QtWidgets.QWidget):
         if not hasattr(self, "atlas_combo"):
             return
 
+        previous_voxel_text = self.atlas_combo.currentText()
+        previous_voxel_data = self.atlas_combo.currentData()
+        previous_mesh_text = self.atlas_name_combo.currentText()
         self.atlas_combo.clear()
 
         # --- Add or show warning label above atlas_combo ---
@@ -919,7 +1034,10 @@ class AnalyzerTab(QtWidgets.QWidget):
             # Ensure mesh atlas combo is populated with predefined atlases
             if self.atlas_name_combo.count() == 0:
                 self.atlas_name_combo.addItems(BUILTIN_ATLASES)
-                self.atlas_name_combo.setCurrentText("DK40")
+                if not self._restore_combo_selection(
+                    self.atlas_name_combo, previous_text=previous_mesh_text
+                ):
+                    self.atlas_name_combo.setCurrentText("DK40")
             self.atlas_name_combo.setEnabled(True)
 
         # Get selected subject from appropriate widget based on mode
@@ -953,7 +1071,12 @@ class AnalyzerTab(QtWidgets.QWidget):
                     display_name, full_path = item
                     self.atlas_combo.addItem(display_name, full_path)
             if self.atlas_combo.count() > 0:
-                self.atlas_combo.setCurrentIndex(0)
+                if not self._restore_combo_selection(
+                    self.atlas_combo,
+                    previous_text=previous_voxel_text,
+                    previous_data=previous_voxel_data,
+                ):
+                    self.atlas_combo.setCurrentIndex(0)
         else:
             # No valid atlases found
             if atlas_files_data and isinstance(atlas_files_data[0], str):
@@ -1169,6 +1292,9 @@ class AnalyzerTab(QtWidgets.QWidget):
         # Store current states
         mesh_atlas_was_enabled = self.atlas_name_combo.isEnabled()
         voxel_atlas_was_enabled = self.atlas_combo.isEnabled()
+        previous_mesh_text = self.atlas_name_combo.currentText()
+        previous_voxel_text = self.atlas_combo.currentText()
+        previous_voxel_data = self.atlas_combo.currentData()
 
         self.atlas_name_combo.clear()  # For mesh
         self.atlas_combo.clear()  # For voxel (this was for single mode, repurposing for group shared voxel if needed)
@@ -1178,7 +1304,10 @@ class AnalyzerTab(QtWidgets.QWidget):
 
         if self.space_mesh.isChecked() and self.type_cortical.isChecked():
             self.atlas_name_combo.addItems(BUILTIN_ATLASES)  # Predefined mesh atlases
-            self.atlas_name_combo.setCurrentText("DK40")
+            if not self._restore_combo_selection(
+                self.atlas_name_combo, previous_text=previous_mesh_text
+            ):
+                self.atlas_name_combo.setCurrentText("DK40")
             self.atlas_name_combo.setEnabled(True)  # Always enable for mesh
             has_valid_atlas = True  # Mesh atlases are always available
             try:
@@ -1242,7 +1371,12 @@ class AnalyzerTab(QtWidgets.QWidget):
                     common_atlases_display.append(disp_name)
 
             if common_atlases_display:
-                self.atlas_combo.setCurrentIndex(0)
+                if not self._restore_combo_selection(
+                    self.atlas_combo,
+                    previous_text=previous_voxel_text,
+                    previous_data=previous_voxel_data,
+                ):
+                    self.atlas_combo.setCurrentIndex(0)
                 self.atlas_combo.setEnabled(True)
                 has_valid_atlas = True
                 try:
@@ -1854,6 +1988,9 @@ class AnalyzerTab(QtWidgets.QWidget):
             details += f"- Tissue: {self.tissue_combo.currentText()}\n"
         if self.space_mesh.isChecked():
             details += f"- Field File: {mont}.msh (auto-selected)\n"
+        mti_measure = self._selected_mti_measure()
+        if mti_measure:
+            details += f"- mTI Measure: {self._mti_measure_label(mti_measure)}\n"
         if self.type_spherical.isChecked():
             coord_space = "MNI" if self.coord_space_mni.isChecked() else "RAS"
             parsed = self._parse_coords_radius()
@@ -2571,6 +2708,10 @@ class AnalyzerTab(QtWidgets.QWidget):
             if not output_dir:
                 return None
 
+            mti_measure = self._selected_mti_measure()
+            if mti_measure:
+                output_dir = os.path.join(output_dir, f"mTI_{mti_measure}")
+
             if os.path.exists(output_dir) and not confirm_overwrite(
                 self, output_dir, "analysis output directory"
             ):
@@ -2589,6 +2730,8 @@ class AnalyzerTab(QtWidgets.QWidget):
                 "visualize": True,
                 "output_dir": output_dir,
             }
+            if mti_measure:
+                config["measure"] = mti_measure
 
             if analysis_type == "spherical":
                 config["center"] = [coords[0], coords[1], coords[2]]

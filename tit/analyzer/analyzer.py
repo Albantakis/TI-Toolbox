@@ -200,6 +200,7 @@ class Analyzer:
         simulation: str,
         space: str = "mesh",
         tissue_type: str = "GM",
+        measure: str | None = None,
         output_dir: str | None = None,
     ) -> None:
         self.subject_id = subject_id
@@ -214,9 +215,11 @@ class Analyzer:
             simulation,
             space,
             tissue_type=self.tissue_type,
+            measure=measure,
         )
         self.field_path = field_path
         self.field_name = field_name
+        self.measure = measure
 
         pm = get_path_manager()
         self.m2m_path = pm.m2m(subject_id)
@@ -231,11 +234,12 @@ class Analyzer:
         self._log_handler = add_file_handler(log_file)
 
         logger.info(
-            "Analyzer initialised: subject=%s sim=%s space=%s tissue=%s",
+            "Analyzer initialised: subject=%s sim=%s space=%s tissue=%s measure=%s",
             subject_id,
             simulation,
             space,
             self.tissue_type,
+            measure or "auto",
         )
 
         # Cached lazily
