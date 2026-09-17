@@ -5,6 +5,10 @@ Vectorised NumPy implementations of the TI/mTI modulation-amplitude
 envelope from Grossman et al. (2017), extended to an arbitrary even
 number of electrode pairs (mTI).
 
+Every public entry point also accepts ``unpaired``: carrier fields that deposit
+energy in the tissue but have no partner to beat against (see `Non-beating
+carriers` below).
+
 Public API
 ----------
 get_TI_vectors
@@ -15,6 +19,20 @@ get_TI_avg
 get_TI_dir
     Modulation depth evaluated along a fixed per-element direction
     (e.g. the cortical surface normal); backs ``TI_normal`` for mTI.
+
+Non-beating carriers
+--------------------
+Passing a carrier changes which path runs at one pair: the exact K=1 closed form
+is bypassed for the direction sweep, so ``unpaired=[zeros]`` is not identical to
+``unpaired=None``. When sweeping a carrier amplitude from zero, pass it at every
+step so all points share one code path::
+
+    depth = np.linalg.norm(get_TI_vectors([E_1a, E_1b], unpaired=[E_hf]), axis=1)
+
+.. warning::
+
+   Every field passed must be a distinct carrier frequency, and this is not
+   checked
 
 Attribution
 -----------
@@ -109,7 +127,7 @@ def _get_TI_vectors_k1(E1_org, E2_org):
     return TI_vectors
 
 
-def get_TI_vectors(fields, psi=None):
+def get_TI_vectors(fields, psi=None, unpaired=None):
     """Compute TI modulation-amplitude vectors for K >= 1 carriers.
 
     ``fields`` is ``[E_1a, E_1b, ..., E_Ka, E_Kb]``, 2K arrays of shape
@@ -128,6 +146,14 @@ def get_TI_vectors(fields, psi=None):
         Per-carrier envelope phase offset (radians); ``None`` means
         phase-aligned carriers (``psi_k=0``), the standard case. Ignored
         at K=1 (phase-invariant there).
+    unpaired : list of np.ndarray, np.ndarray, or None
+        Non-beating carrier fields, one entry per distinct carrier
+        frequency, each shaped like an entry of ``fields``. They raise the
+        carrier power ``P`` and contribute nothing to the beat term ``Q``,
+        so they lower the returned depth. A single ``(N, 3)`` array is
+        accepted as one carrier. The one-frequency-per-entry requirement is
+        **not checked** -- see the module docstring's `Non-beating carriers`
+        section for what goes wrong if it is violated.
 
     Returns
     -------
@@ -150,16 +176,20 @@ def get_TI_vectors(fields, psi=None):
     """
     arrs = _validate_field_list(fields)
     n_pairs = len(arrs) // 2
-    _validate_psi(psi, n_pairs)
+    psi_arr = _validate_psi(psi, n_pairs)
+    # Fold the carriers in before the K=1 test: the closed form below is only
+    # valid for two fields (see :func:`_append_unpaired`).
+    arrs, psi_arr = _append_unpaired(arrs, psi_arr, unpaired)
+    n_pairs = len(arrs) // 2
 
     if n_pairs == 1:
         return _get_TI_vectors_k1(arrs[0], arrs[1])
 
-    result = _mti_modulation_depth(arrs, psi=psi)
+    result = _mti_modulation_depth(arrs, psi=psi_arr)
     return result["best_direction"] * result["md"][:, None]
 
 
-def get_TI_avg(fields, psi=None):
+def get_TI_avg(fields, psi=None, unpaired=None):
     """Direction-averaged modulation depth for K >= 1 electrode pairs.
 
     ``TI_max`` (:func:`get_TI_vectors`) maximizes the envelope over
@@ -176,6 +206,8 @@ def get_TI_avg(fields, psi=None):
     psi : array-like, shape (K,), or None
         Per-carrier envelope phase offset (radians); see
         :func:`get_TI_vectors`.
+    unpaired : list of np.ndarray, np.ndarray, or None
+        Non-beating carrier fields; see :func:`get_TI_vectors`.
 
     Returns
     -------
@@ -185,10 +217,11 @@ def get_TI_avg(fields, psi=None):
     arrs = _validate_field_list(fields)
     n_pairs = len(arrs) // 2
     psi_arr = _validate_psi(psi, n_pairs)
+    arrs, psi_arr = _append_unpaired(arrs, psi_arr, unpaired)
     return _mti_modulation_depth_avg(arrs, psi_arr)
 
 
-def get_TI_dir(fields, directions, psi=None):
+def get_TI_dir(fields, directions, psi=None, unpaired=None):
     """Modulation depth along a fixed per-element direction, K >= 1.
 
     The multi-carrier analogue of SimNIBS's 2-field ``TI.get_dirTI``:
@@ -208,13 +241,17 @@ def get_TI_dir(fields, directions, psi=None):
     psi : array-like, shape (K,), or None
         Per-carrier envelope phase offset (radians); see
         :func:`get_TI_vectors`.
+    unpaired : list of np.ndarray, np.ndarray, or None
+        Non-beating carrier fields; see :func:`get_TI_vectors`.
 
     Returns
     -------
     np.ndarray, shape (N,)
         Modulation depth [V/m] along ``directions``.
     """
-    result = _mti_modulation_depth(fields, psi=psi, directions=directions)
+    result = _mti_modulation_depth(
+        fields, psi=psi, directions=directions, unpaired=unpaired
+    )
     return result["md"]
 
 
@@ -225,6 +262,7 @@ def _mti_modulation_depth(
     num_directions=192,
     chunk_size=16384,
     refine=True,
+    unpaired=None,
 ):
     r"""Compute the coherent multi-pair TI modulation-depth envelope.
 
@@ -247,6 +285,8 @@ def _mti_modulation_depth(
         Field vectors ordered ``[E_1a, E_1b, E_2a, E_2b, ...]``, 2K arrays.
     psi : array-like, shape (K,), or None
         Per-pair envelope phase offset in radians.
+    unpaired : list of np.ndarray, np.ndarray, or None
+        Non-beating carrier fields; see :func:`get_TI_vectors`.
     directions : np.ndarray, shape (N, 3), or None
         Fixed per-element direction to evaluate at, instead of searching.
     num_directions : int, default 192
@@ -277,6 +317,10 @@ def _mti_modulation_depth(
     arrs = _validate_field_list(fields)
     n_pairs = len(arrs) // 2
     psi_arr = _validate_psi(psi, n_pairs)
+    # Fold the carriers in before the K=1 test below, which dispatches to a
+    # closed form valid only for two fields (see :func:`_append_unpaired`).
+    arrs, psi_arr = _append_unpaired(arrs, psi_arr, unpaired)
+    n_pairs = len(arrs) // 2
 
     if directions is not None:
         return _mti_modulation_depth_at_directions(arrs, psi_arr, directions)
@@ -328,6 +372,83 @@ def _validate_psi(psi, n_pairs):
             f"shape {psi_arr.shape}"
         )
     return psi_arr
+
+
+def _validate_unpaired_list(unpaired, ref_shape):
+    """Validate the non-beating carrier fields against the paired shape.
+
+    Unlike :func:`_validate_field_list` there is no even-count rule: unpaired
+    carriers are counted individually, one entry per distinct carrier
+    frequency. A bare ``(N, 3)`` array is accepted as a single carrier.
+    """
+    if unpaired is None:
+        return []
+    if isinstance(unpaired, np.ndarray) and unpaired.ndim == 2:
+        unpaired = [unpaired]
+    arrs = [np.asarray(field, dtype=np.float64) for field in unpaired]
+    for i, arr in enumerate(arrs, start=1):
+        if arr.shape != ref_shape:
+            raise ValueError(
+                "All unpaired carrier fields must have the same shape as the "
+                f"paired fields; expected {ref_shape}, unpaired field {i} has "
+                f"{arr.shape}"
+            )
+    return arrs
+
+
+def _append_unpaired(arrs, psi, unpaired):
+    """Fold non-beating carriers into the field list as zero-partnered pairs.
+
+    A carrier with no beat partner contributes to the total power ``P`` and
+    nothing to the coherent term ``Q``. Pairing it with a zero field
+    reproduces exactly that: in :func:`_quadratic_forms` ``M_P`` gains
+    ``0.5 * E_u E_u^T`` while ``M_Q`` gains ``sym(E_u . 0^T) = 0``.
+
+    Doing it here, at the entry point, rather than inside the envelope is
+    deliberate -- three separate code paths build ``P`` and adding the carrier
+    to only one of them would silently drop it from the others:
+
+    * :func:`get_TI_vectors` and :func:`_mti_modulation_depth` both short
+      circuit at ``n_pairs == 1`` into a closed form (Grossman/Hirata) that is
+      derived for *two* fields and cannot represent an extra carrier. Appending
+      a zero-partnered pair lifts ``n_pairs`` past 1, so those branches are
+      correctly bypassed -- which matters most for the unipolar-plus-HF case,
+      exactly where the shortcut would otherwise return the unsuppressed answer.
+    * :mod:`tit._mti_kernel` rebuilds ``M_P`` itself in numba and never calls
+      :func:`_quadratic_forms`. It pairs positionally, so it honours the
+      appended pair with no change.
+    * :func:`_pairwise_products` backs the fixed-direction path
+      (:func:`get_TI_dir`) and likewise sums over whatever field list it is
+      given.
+
+    The appended phases are arbitrary -- the zero-partnered product vanishes
+    regardless -- so zeros are used.
+
+    Note
+    ----
+    Passing any carrier, including an all-zero one, lifts ``n_pairs`` past 1 and
+    so moves a one-pair call off the exact K=1 closed form onto the refined
+    sweep. Both are correct, but they differ by the sweep's residual. When
+    sweeping a carrier amplitude from zero, pass it at every step
+    (``unpaired=[c * E]`` even at ``c == 0``) so every point shares one code
+    path.
+
+    Returns
+    -------
+    arrs : list of np.ndarray
+        ``arrs`` with ``[E_u, 0]`` appended per carrier (unchanged if none).
+    psi : np.ndarray or None
+        ``psi`` zero-padded to match the new pair count (``None`` stays
+        ``None``).
+    """
+    extra = _validate_unpaired_list(unpaired, arrs[0].shape)
+    if not extra:
+        return arrs, psi
+    zero = np.zeros_like(arrs[0])
+    arrs = list(arrs) + [field for u in extra for field in (u, zero)]
+    if psi is not None:
+        psi = np.concatenate([psi, np.zeros(len(extra), dtype=np.float64)])
+    return arrs, psi
 
 
 def _pairwise_products(proj_fields, psi):
