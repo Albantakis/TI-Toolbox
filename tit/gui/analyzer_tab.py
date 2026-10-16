@@ -815,6 +815,8 @@ class AnalyzerTab(QtWidgets.QWidget):
         )
         self.atlas_combo = QtWidgets.QComboBox()
         self.atlas_combo.setEditable(False)
+        self.atlas_combo.currentIndexChanged.connect(self._on_atlas_changed)
+        self.atlas_name_combo.currentIndexChanged.connect(self._on_atlas_changed)
         self.atlas_combo.setSizePolicy(
             QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed
         )
@@ -1009,6 +1011,9 @@ class AnalyzerTab(QtWidgets.QWidget):
         if not hasattr(self, "atlas_combo"):
             return
 
+        # Rebuilding the list is not an atlas change. Compare the final
+        # selection in update_atlas_dependent_controls instead.
+        _atlas_signal_blocker = QtCore.QSignalBlocker(self.atlas_combo)
         previous_voxel_text = self.atlas_combo.currentText()
         previous_voxel_data = self.atlas_combo.currentData()
         previous_mesh_text = self.atlas_name_combo.currentText()
@@ -1113,6 +1118,17 @@ class AnalyzerTab(QtWidgets.QWidget):
             has_valid_atlas=has_valid_atlas, requires_atlas=requires_atlas
         )
 
+    def _on_atlas_changed(self, *_):
+        """Discard region names belonging to a different atlas or space."""
+        if self.space_mesh.isChecked():
+            atlas_key = ("mesh", self.atlas_name_combo.currentText())
+        else:
+            atlas_key = ("voxel", self.atlas_combo.currentData())
+        previous_key = getattr(self, "_region_atlas_key", None)
+        if previous_key is not None and previous_key != atlas_key:
+            self.region_input.clear()
+        self._region_atlas_key = atlas_key
+
     def update_atlas_dependent_controls(
         self, has_valid_atlas=False, requires_atlas=False
     ):
@@ -1151,6 +1167,7 @@ class AnalyzerTab(QtWidgets.QWidget):
         # Should be enabled for cortical analysis, but only if we have valid atlases
         can_list_regions = cortical_controls_enabled
         self.show_regions_btn.setEnabled(can_list_regions)
+        self._on_atlas_changed()
 
     def browse_atlas(self):
         initial_dir = ""
@@ -1289,6 +1306,8 @@ class AnalyzerTab(QtWidgets.QWidget):
             # Don't disable everything if no subjects - user might be in process of selecting
             return
 
+        _mesh_signal_blocker = QtCore.QSignalBlocker(self.atlas_name_combo)
+        _voxel_signal_blocker = QtCore.QSignalBlocker(self.atlas_combo)
         # Store current states
         mesh_atlas_was_enabled = self.atlas_name_combo.isEnabled()
         voxel_atlas_was_enabled = self.atlas_combo.isEnabled()
@@ -1406,6 +1425,7 @@ class AnalyzerTab(QtWidgets.QWidget):
                 self.region_label.setEnabled(False)
                 self.region_input.setEnabled(False)
                 self.show_regions_btn.setEnabled(False)
+                self._on_atlas_changed()
                 return  # Skip the centralized update, as we've set everything explicitly
 
         # Update all related controls using centralized method
